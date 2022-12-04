@@ -4,12 +4,11 @@ from tensorboardX import SummaryWriter
 import logging
 from datetime import datetime
 import torch 
-# import sys 
-# sys.path.append("..")
 import models.resnet8 as resnet8
-import dataset.data_cifar as data_cifar
+from mydataset.data_cifar import *
 from torch.utils.data import DataLoader
 from utils.myfed import *
+import wandb
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -21,13 +20,13 @@ def get_args():
     parser.add_argument('--datapath', type=str, default = './data/')
     # path
     parser.add_argument('--logfile', default='', type=str)
-    parser.add_argument('--subpath', type=str, default ='') #subpath under localtraining folder to save central model
+    parser.add_argument('--subpath', type=str, default ='', help="#subpath under localtraining folder to save central model") 
 
     # local training
     parser.add_argument('--N_parties', type=int, default = 20)
     parser.add_argument('--alpha', type=float, default = 1.0)
     parser.add_argument('--seed', type=int, default = 1)
-    parser.add_argument('--C', type=float, default = 1) #percent of locals selected in each fed communication round
+    parser.add_argument('--C', type=float, default = 1, help="#percent of locals selected in each fed communication round")
     parser.add_argument('--fedinitepochs', type=int, default = 20) #epochs of local training
     parser.add_argument('--batchsize', type=int, default =16)#128
     parser.add_argument('--lr', type=float, default = 0.0025)#0.025
@@ -47,7 +46,7 @@ def get_args():
     parser.add_argument('--localepochs', type=int, default = 10)
     # parser.add_argument('--initepochs', type=int, default = 500)
     parser.add_argument('--initepochs', type=int, default = 300)
-    parser.add_argument('--initcentral', type=str, default = '')#ckpt used to init central model, import for co-distillation
+    parser.add_argument('--initcentral', type=str, default = '', help="#ckpt used to init central model, import for co-distillation")
     parser.add_argument('--wdecay', type=float, default = 0)
     parser.add_argument('--steps_round', type=int, default = 10000)
     parser.add_argument('--dis_lr', type=float, default = 1e-3) #1e-3
@@ -56,24 +55,31 @@ def get_args():
     
     #ensemble
     parser.add_argument('--voteout', action='store_true')
-    parser.add_argument('--clscnt', type=int, default = 1) #local weight specific to class
+    parser.add_argument('--clscnt', type=int, default = 1, help="#local weight specific to class")
     #loss
-    parser.add_argument('--lossmode', type=str, default = 'l1') #kl or l1
+    parser.add_argument('--lossmode', type=str, default = 'kl') #kl or l1
 
     return parser.parse_args()
+
+# run = wandb.init(project="FEDMAD_test")
 
 if __name__ == "__main__":
     args = get_args()
     os.environ['CUDA_VISIBLE_DEVICES']=args.gpu
     
+    # # wandb.init(project="FEDMAD_test")
+    # config = {
+    #     'alpha' : args.alpha,
+    #     'batchsize' : args.batchsize,
+    #     'localepochs' : args.localepochs,
+    #     'N_parties' : args.N_parties,
+    #     'dataset' : args.dataset,
+    #     'C' : args.C
+    # }
+    # wandb.config.update(config)
+    
     handlers = [logging.StreamHandler()]
-    if args.logfile:
-        args.logfile = f'{datetime.now().strftime("%m%d%H%M")}'+args.logfile
-    else:
-        if args.joint:
-            args.logfile = f'{datetime.now().strftime("%m%d%H%M")}_joint_a{args.alpha}s{args.seed}c{args.C}-sr{args.steps_round}'
-        else:
-            args.logfile = f'{datetime.now().strftime("%m%d%H%M")}_{args.dataset}_a{args.alpha}s{args.seed}c{args.C}_os{args.oneshot}_q{args.quantify}n{args.noisescale}'
+    args.logfile = f'{datetime.now().strftime("%m%d%H%M")}'+args.logfile
     
     writer = SummaryWriter(comment=args.logfile)
     if not os.path.isdir('./logs'):
@@ -96,8 +102,8 @@ if __name__ == "__main__":
     assert args.dataset=='cifar10' or args.dataset=='cifar100'
     publicdata = 'cifar100' if args.dataset=='cifar10' else 'imagenet'
     args.N_class = 10 if args.dataset=='cifar10' else 100
-    priv_data, _, test_dataset, public_dataset, distill_loader = data_cifar.dirichlet_datasplit(
-        args, privtype=args.dataset, publictype=publicdata, N_parties=20, online=not args.oneshot, public_percent=args.public_percent)
+    priv_data, _, test_dataset, public_dataset, distill_loader = dirichlet_datasplit(
+        args, privtype=args.dataset, publictype=publicdata, N_parties=args.N_parties, online=not args.oneshot, public_percent=args.public_percent)
     test_loader = DataLoader(
         dataset=test_dataset, batch_size=args.batchsize, shuffle=False, num_workers=args.num_workers, sampler=None)
     
@@ -107,28 +113,19 @@ if __name__ == "__main__":
     gpu = [int(i) for i in range(torch.cuda.device_count())]
     logging.info(f'GPU: {args.gpu}')
     model = resnet8.ResNet8(num_classes=args.N_class).cuda()
-    logging.info("totally {} paramerters".format(sum(x.numel() for x in model.parameters())))
-    logging.info("Param size {}".format(np.sum(np.prod(x.size()) for name,x in model.named_parameters() if 'linear2' not in name)))
+    logging.info("totally {} paramerters".format(np.sum(x.numel() for x in model.parameters())))
+    logging.info("Param size {}".format(np.sum([np.prod(x.size()) for name,x in model.named_parameters() if 'linear2' not in name])))
+    
     if len(gpu)>1:
         model = nn.DataParallel(model, device_ids=gpu)
     
     # 3. fed training
-    if args.quantify or args.noisescale:
-        fed = FedMADwQN(model, distill_loader, priv_data, test_loader, writer, args)
-        if args.oneshot:
-            fed.update_distill_loader_wlocals(public_dataset)
-            fed.distill_local_central_oneshot()
-        else:
-            fed.distill_local_central()
+    fed = FedMAD(model, distill_loader, priv_data, test_loader, writer, args)
+    if args.oneshot:
+        fed.update_distill_loader_wlocals(public_dataset)
+        fed.distill_local_central_oneshot()
     else:
-        fed = FedMAD(model, distill_loader, priv_data, test_loader, writer, args)
-        if args.joint:
-            fed.distill_local_central_joint()
-        elif args.oneshot:
-            fed.update_distill_loader_wlocals(public_dataset)
-            fed.distill_local_central_oneshot()
-        else:
-            fed.distill_local_central()
+        fed.distill_local_central()
     
     if not args.debug:
         writer.close()

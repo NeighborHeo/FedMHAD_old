@@ -43,7 +43,7 @@ class ResNet(nn.Module):
 
         self.conv1 = nn.Conv2d(3, 128, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(128)
-        self.layer1 = self._make_layer(block,  128, num_blocks[0], stride=1)
+        self.layer1 = self._make_layer(block, 128, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 256, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 512, num_blocks[2], stride=2)
         self.linear1 = nn.Linear(2048, num_classes) #512*exp*block.expansion
@@ -61,18 +61,22 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.layer1(out) #b*128*32*32
-        out = self.layer2(out)#b*256*16*16
-        out = self.layer3(out) #b*512*8*8
-        self.inner = out
-        out = F.avg_pool2d(out, 4)
-        out = out.view(out.size(0), -1)
-        #print(out.size())
-        #input()
-        self.flatten_feat = out #b*2048
-        out = self.linear1(out)
-        return out
+        pstem = self.conv1(x) # pstem: pre stem before activation
+        pstem = self.bn1(pstem)
+        stem  = F.relu(pstem)
+        # stem  = (pstem, stem)
+
+        rb1 = self.layer1(stem)
+        rb2 = self.layer2(rb1)
+        rb3 = self.layer3(rb2)
+        self.inner = rb3
+        
+        feat = F.avg_pool2d(rb3, 4)
+        feat = feat.view(feat.size(0), -1)
+        self.flatten_feat = feat
+        out  = self.linear1(feat)
+
+        return stem, rb1, rb2, rb3, feat, out
 
     def get_attentions(self):
         inner_copy = self.inner.detach().clone()#b*512*8*8

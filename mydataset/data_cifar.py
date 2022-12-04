@@ -29,6 +29,7 @@ class myImageFolder(datasets.ImageFolder):
 
 def dirichlet_datasplit(args, privtype='cifar10', publictype='cifar100', N_parties=20, online=True, public_percent=1):
     #public cifar100
+    print(privtype, publictype)
     if publictype== 'cifar100':
         public_dataset = Cifar_Dataset( 
             os.path.join(args.datapath, 'cifar-100-python/'), publictype, train=True, verbose=False, distill = True, aug=online, public_percent=public_percent)

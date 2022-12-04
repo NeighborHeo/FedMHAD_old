@@ -9,8 +9,8 @@ import torch.optim as optim
 import utils.utils as utils
 import copy
 import random
-import loss.loss as Loss 
-import dataset.data_cifar as data_cifar
+import loss.loss as Loss
+import mydataset.data_cifar as data_cifar
 
 class FedMAD:
     def __init__(self, central, distil_loader, private_data, val_loader, 
@@ -59,9 +59,7 @@ class FedMAD:
             os.makedirs(self.rootdir)
         if initpth:
             if not args.subpath:
-                if args.joint:
-                    args.subpath = f'joint_c{args.C}_s{args.steps_round}_lr{args.dis_lr}_{args.dis_lrmin}'
-                elif args.oneshot:
+                if args.oneshot:
                     args.subpath = f'oneshot_c{args.C}_q{args.quantify}_n{args.noisescale}'
                 else:
                     args.subpath = f'oneshot_c{args.C}_q{args.quantify}_n{args.noisescale}'
@@ -110,7 +108,7 @@ class FedMAD:
             total_logits = []
             for n in selectN:
                 tmodel = copy.deepcopy(self.localmodels[n])
-                logits = tmodel(images).detach()
+                stem, rb1, rb2, rb3, feat, logits = tmodel(images).detach()
                 total_logits.append(logits)
                 del tmodel
             total_logits = torch.stack(total_logits) #nlocal*batch*ncls
@@ -120,7 +118,7 @@ class FedMAD:
                 ensemble_logits = (total_logits*localweight).detach().sum(dim=0) #batch*ncls
 
         model.train()
-        output = model(images)
+        stem, rb1, rb2, rb3, feat, output = model(images)
         loss = self.criterion(output, ensemble_logits)
         
         optimizer.zero_grad()
@@ -183,6 +181,7 @@ class FedMAD:
                     logging.info(f'========Best...Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
             scheduler.step()
             logging.info(f'Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
+            # wandb.log({'DisACC': acc, 'DisLoss': loss.item(), 'DisEpoch': epoch, 'DisIter': step})
       
     def distill_local_central_joint(self):
         if self.args.initcentral:
@@ -328,7 +327,7 @@ class FedMAD:
             for i, (images, target, _) in enumerate(self.val_loader):
                 images = images.cuda()
                 target = target.cuda()
-                output = model(images)
+                stem, rb1, rb2, rb3, feat, output = model(images)
                 acc, = utils.accuracy(output.detach(), target)
                 testacc.update(acc)
         return testacc.avg    
@@ -341,7 +340,7 @@ class FedMAD:
                 images = images.cuda()
                 target = target.cuda()
                 for n in selectN:
-                    output = self.localmodels[n](images).detach()
+                    stem, rb1, rb2, rb3, feat, output = self.localmodels[n](images).detach()
                     logits.append(output)
                 logits = torch.stack(logits)
                 if self.voteout:
@@ -379,7 +378,7 @@ class FedMAD:
             for i, (images, target, _) in enumerate(train_loader):
                 images = images.cuda()
                 target = target.cuda()
-                output = model(images)
+                stem, rb1, rb2, rb3, feat, output = model(images)
                 # import ipdb; ipdb.set_trace()
                 loss = criterion(output, target)
                 acc,  = utils.accuracy(output, target)
@@ -399,7 +398,7 @@ class FedMAD:
                 for i, (images, target, _) in enumerate(test_loader):
                     images = images.cuda()
                     target = target.cuda()
-                    output = model(images)
+                    stem, rb1, rb2, rb3, feat, output = model(images)
                     acc, = utils.accuracy(output, target)
                     testacc.update(acc)
                 if writer is not None:
@@ -428,7 +427,7 @@ class FedMAD:
             batch_logits = []
             for n in self.locallist:
                 tmodel = copy.deepcopy(self.localmodels[n])
-                logits = tmodel(images).detach()
+                stem, rb1, rb2, rb3, feat, logits = tmodel(images).detach()
                 batch_logits.append(logits)
                 del tmodel
             batch_logits = torch.stack(batch_logits).cpu()#(nl, nb, ncls)
@@ -454,14 +453,13 @@ class FedMAD:
         #if noise
 
         model.train()
-        central_logits = model(images)
+        stem, rb1, rb2, rb3, feat, central_logits = model(images)
         loss = self.criterion(central_logits, ensemble_logits)
         
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         return loss
-
         
     def distill_local_central_oneshot(self):
         args = self.args
@@ -517,83 +515,3 @@ class FedMAD:
                     logging.info(f'========Best...Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
             scheduler.step()
             logging.info(f'Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
-        
-
-class FedMADwQN(FedMAD):
-    def distill_onemodel_batch(self, model, images, selectN, localweight, optimizer, usecentral=True):
-        if self.args.noisescale:
-            laplace = torch.distributions.laplace.Laplace(torch.tensor([0.0]), torch.tensor([self.args.noisescale]))
-        if usecentral:
-            ensemble_logits = self.central(images).detach()
-        else:
-            #get local
-            total_logits = []
-            for n in selectN:
-                tmodel = copy.deepcopy(self.localmodels[n])
-                logits = tmodel(images).detach()
-                total_logits.append(logits)
-                del tmodel
-            total_logits = torch.stack(total_logits) #nlocal*batch*ncls
-            if self.args.quantify:
-                #quantify orginal =100
-                logits_max = total_logits.abs().max()
-                norm_total_logits = total_logits/logits_max #(-1,1)
-                norm_total_logits_q200 = (norm_total_logits*self.args.quantify+0.5).int()#(-99,100)
-                #de-quantify
-                re_total_logits = (norm_total_logits_q200/self.args.quantify)*logits_max
-                # import ipdb; ipdb.set_trace()
-                total_logits = re_total_logits
-            #
-            if self.voteout:
-                ensemble_logits = Loss.weight_psedolabel(total_logits, self.countN[selectN], noweight=True).detach()
-            else:    
-                ensemble_logits = (total_logits*localweight).detach().sum(dim=0) #batch*ncls
-            if self.args.noisescale:
-                nb, nc = ensemble_logits.shape
-                noise = laplace.sample((nb,nc)).to(ensemble_logits.device).squeeze(dim=-1)
-                # import ipdb; ipdb.set_trace()
-                ensemble_logits += noise
-        model.train()
-        output = model(images)
-        loss = self.criterion(output, ensemble_logits)
-        
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        return loss
-
-    def distill_batch_oneshot(self, model, images, idx, selectN, localweight, optimizer):
-        if self.args.noisescale:
-            laplace = torch.distributions.laplace.Laplace(torch.tensor([0.0]), torch.tensor([self.args.noisescale]))
-        
-        total_logits = self.total_logits[idx].permute(1,0,2) #nlocal*batch*ncls
-        total_logits = total_logits[torch.tensor(selectN)].to(images.device) #nlocal*batch*ncls
-        if self.args.quantify:
-            #quantify orginal =100
-            logits_max = total_logits.abs().max()
-            norm_total_logits = total_logits/logits_max #(-1,1)
-            norm_total_logits_q200 = (norm_total_logits*self.args.quantify+0.5).int()#(-99,100)
-            #de-quantify
-            re_total_logits = (norm_total_logits_q200/self.args.quantify)*logits_max
-            # import ipdb; ipdb.set_trace()
-            total_logits = re_total_logits
-
-        if self.voteout:
-            ensemble_logits, votemask = Loss.weight_psedolabel(total_logits, self.countN[selectN])
-        else:    
-            ensemble_logits = (total_logits*localweight).sum(dim=0) #batch*ncls
-        if self.args.noisescale:
-            nb, nc = ensemble_logits.shape
-            # noise = torch.normal(mean=0.0, std=self.args.noisestd, size=(nb, nc)).to(logits.device)
-            noise = laplace.sample((nb,nc)).to(ensemble_logits.device).squeeze(dim=-1)
-            # import ipdb; ipdb.set_trace()
-            ensemble_logits += noise
-
-        model.train()
-        central_logits = model(images)
-        loss = self.criterion(central_logits, ensemble_logits)
-        
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        return loss
