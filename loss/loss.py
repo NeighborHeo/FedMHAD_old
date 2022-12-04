@@ -2,6 +2,9 @@ import torch
 EPS = 1e-5
 
 class kl_loss(torch.nn.Module):
+    '''
+    summary : kullback-leibler divergence loss      
+    '''
     def __init__(self, T=3, singlelabel=False):
         super().__init__()
         self.T = T

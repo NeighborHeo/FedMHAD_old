@@ -18,7 +18,7 @@ def get_args():
     parser.add_argument('--num_workers', type=int, default = 8) 
     # data
     parser.add_argument('--dataset', type=str, default = 'cifar10')
-    parser.add_argument('--datapath', type=str, default = '/data_local/xuangong/data/')
+    parser.add_argument('--datapath', type=str, default = './data/')
     # path
     parser.add_argument('--logfile', default='', type=str)
     parser.add_argument('--subpath', type=str, default ='') #subpath under localtraining folder to save central model
@@ -45,7 +45,8 @@ def get_args():
     # fed training param
     parser.add_argument('--disbatchsize', type=int, default = 512)  
     parser.add_argument('--localepochs', type=int, default = 10)
-    parser.add_argument('--initepochs', type=int, default = 500)
+    # parser.add_argument('--initepochs', type=int, default = 500)
+    parser.add_argument('--initepochs', type=int, default = 300)
     parser.add_argument('--initcentral', type=str, default = '')#ckpt used to init central model, import for co-distillation
     parser.add_argument('--wdecay', type=float, default = 0)
     parser.add_argument('--steps_round', type=int, default = 10000)
@@ -113,14 +114,14 @@ if __name__ == "__main__":
     
     # 3. fed training
     if args.quantify or args.noisescale:
-        fed = FedKDwQN(model, distill_loader, priv_data, test_loader, writer, args)
+        fed = FedMADwQN(model, distill_loader, priv_data, test_loader, writer, args)
         if args.oneshot:
             fed.update_distill_loader_wlocals(public_dataset)
             fed.distill_local_central_oneshot()
         else:
             fed.distill_local_central()
     else:
-        fed = FedKD(model, distill_loader, priv_data, test_loader, writer, args)
+        fed = FedMAD(model, distill_loader, priv_data, test_loader, writer, args)
         if args.joint:
             fed.distill_local_central_joint()
         elif args.oneshot:

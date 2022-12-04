@@ -12,7 +12,7 @@ import random
 import loss.loss as Loss 
 import dataset.data_cifar as data_cifar
 
-class FedKD:
+class FedMAD:
     def __init__(self, central, distil_loader, private_data, val_loader, 
                    writer, args, initpth=True, localmodel=None):
         # import ipdb; ipdb.set_trace()
@@ -56,7 +56,7 @@ class FedKD:
         #path to save ckpt
         self.rootdir = f'./checkpoints/{args.dataset}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}'
         if not os.path.isdir(self.rootdir):
-            os.mkdir(self.rootdir)
+            os.makedirs(self.rootdir)
         if initpth:
             if not args.subpath:
                 if args.joint:
@@ -67,7 +67,7 @@ class FedKD:
                     args.subpath = f'oneshot_c{args.C}_q{args.quantify}_n{args.noisescale}'
             self.savedir = os.path.join(self.rootdir, args.subpath)
             if not os.path.isdir(self.savedir):
-                os.mkdir(self.savedir)
+                os.makedirs(self.savedir)
         self.init_locals(initpth, init_dir='')
 
     def init_locals(self, initpth=True, init_dir=''):
@@ -519,7 +519,7 @@ class FedKD:
             logging.info(f'Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
         
 
-class FedKDwQN(FedKD):
+class FedMADwQN(FedMAD):
     def distill_onemodel_batch(self, model, images, selectN, localweight, optimizer, usecentral=True):
         if self.args.noisescale:
             laplace = torch.distributions.laplace.Laplace(torch.tensor([0.0]), torch.tensor([self.args.noisescale]))
