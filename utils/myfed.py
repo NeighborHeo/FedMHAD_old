@@ -181,7 +181,6 @@ class FedMAD:
                     logging.info(f'========Best...Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
             scheduler.step()
             logging.info(f'Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
-            # wandb.log({'DisACC': acc, 'DisLoss': loss.item(), 'DisEpoch': epoch, 'DisIter': step})
       
     def distill_local_central_joint(self):
         if self.args.initcentral:

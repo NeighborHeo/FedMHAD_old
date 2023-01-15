@@ -8,7 +8,6 @@ import models.resnet8 as resnet8
 from mydataset.data_cifar import *
 from torch.utils.data import DataLoader
 from utils.myfed import *
-import wandb
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -58,25 +57,12 @@ def get_args():
     parser.add_argument('--clscnt', type=int, default = 1, help="#local weight specific to class")
     #loss
     parser.add_argument('--lossmode', type=str, default = 'kl') #kl or l1
-
+    
     return parser.parse_args()
-
-# run = wandb.init(project="FEDMAD_test")
 
 if __name__ == "__main__":
     args = get_args()
     os.environ['CUDA_VISIBLE_DEVICES']=args.gpu
-    
-    # # wandb.init(project="FEDMAD_test")
-    # config = {
-    #     'alpha' : args.alpha,
-    #     'batchsize' : args.batchsize,
-    #     'localepochs' : args.localepochs,
-    #     'N_parties' : args.N_parties,
-    #     'dataset' : args.dataset,
-    #     'C' : args.C
-    # }
-    # wandb.config.update(config)
     
     handlers = [logging.StreamHandler()]
     args.logfile = f'{datetime.now().strftime("%m%d%H%M")}'+args.logfile
