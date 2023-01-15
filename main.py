@@ -4,7 +4,7 @@ from tensorboardX import SummaryWriter
 import logging
 from datetime import datetime
 import torch 
-import models.resnet8 as resnet8
+import mymodels.resnet8 as resnet8
 from mydataset.data_cifar import *
 from torch.utils.data import DataLoader
 from utils.myfed import *
