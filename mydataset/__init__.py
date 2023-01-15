@@ -1,1 +1,1 @@
-from data_cifar import *
+from .data_cifar import *

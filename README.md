@@ -18,3 +18,8 @@ python main.py --alpha 0.1 --seed 1 --C 1 --oneshot --noisescale 1.0 --quantify 
 python main.py --alpha 1.0 --seed 1 --C 1 --dataset cifar100 --oneshot --noisescale 1.0 --quantify 100
 python main.py --alpha 0.1 --seed 1 --C 1 --dataset cifar100 --oneshot --noisescale 1.0 --quantify 100
 ```
+
+# tensorboard 
+```
+tensorboard --logdir=runs
+```

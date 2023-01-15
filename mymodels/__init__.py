@@ -1,1 +1,2 @@
-from resnet8 import *
+from .resnet8 import *
+from .vit_models import *

@@ -108,7 +108,7 @@ class FedMAD:
             total_logits = []
             for n in selectN:
                 tmodel = copy.deepcopy(self.localmodels[n])
-                stem, rb1, rb2, rb3, feat, logits = tmodel(images).detach()
+                logits = tmodel(images).detach()
                 total_logits.append(logits)
                 del tmodel
             total_logits = torch.stack(total_logits) #nlocal*batch*ncls
@@ -118,7 +118,7 @@ class FedMAD:
                 ensemble_logits = (total_logits*localweight).detach().sum(dim=0) #batch*ncls
 
         model.train()
-        stem, rb1, rb2, rb3, feat, output = model(images)
+        output = model(images)
         loss = self.criterion(output, ensemble_logits)
         
         optimizer.zero_grad()
@@ -170,8 +170,8 @@ class FedMAD:
                 step += 1
                 acc = self.validate_model(self.central)
                 if self.writer is not None:
-                    self.writer.add_scalar('loss', loss.item(), step)
-                    self.writer.add_scalar('DisACC', acc, step)
+                    self.writer.add_scalar('loss', loss.item(), step, display_name='loss')
+                    self.writer.add_scalar('DisACC', acc, step, display_name='DisACC')
                 if acc>bestacc:
                     if bestname:
                         os.system(f'rm {bestname}')
@@ -326,7 +326,7 @@ class FedMAD:
             for i, (images, target, _) in enumerate(self.val_loader):
                 images = images.cuda()
                 target = target.cuda()
-                stem, rb1, rb2, rb3, feat, output = model(images)
+                output = model(images)
                 acc, = utils.accuracy(output.detach(), target)
                 testacc.update(acc)
         return testacc.avg    
@@ -339,7 +339,7 @@ class FedMAD:
                 images = images.cuda()
                 target = target.cuda()
                 for n in selectN:
-                    stem, rb1, rb2, rb3, feat, output = self.localmodels[n](images).detach()
+                    output = self.localmodels[n](images).detach()
                     logits.append(output)
                 logits = torch.stack(logits)
                 if self.voteout:
@@ -377,7 +377,7 @@ class FedMAD:
             for i, (images, target, _) in enumerate(train_loader):
                 images = images.cuda()
                 target = target.cuda()
-                stem, rb1, rb2, rb3, feat, output = model(images)
+                output = model(images)
                 # import ipdb; ipdb.set_trace()
                 loss = criterion(output, target)
                 acc,  = utils.accuracy(output, target)
@@ -386,10 +386,10 @@ class FedMAD:
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-            logging.info(f'loss={trloss.avg}, acc={tracc.avg}')
+            logging.info(f'loss={trloss.avg:.2f}, acc={tracc.avg:.2f}')
             if writer is not None:
-                writer.add_scalars(str(modelid)+'train', {'loss': trloss.avg}, epoch)
-                writer.add_scalars(str(modelid)+'train', {'acc': tracc.avg}, epoch)
+                writer.add_scalars(str(modelid)+'train', {'loss': trloss.avg}, epoch) #display_name=str(modelid)+'train'
+                writer.add_scalars(str(modelid)+'train', {'acc': tracc.avg}, epoch) #display_name=str(modelid)+'train'
             #val
             model.eval()
             testacc = utils.AverageMeter()
@@ -397,11 +397,11 @@ class FedMAD:
                 for i, (images, target, _) in enumerate(test_loader):
                     images = images.cuda()
                     target = target.cuda()
-                    stem, rb1, rb2, rb3, feat, output = model(images)
+                    output = model(images)
                     acc, = utils.accuracy(output, target)
                     testacc.update(acc)
                 if writer is not None:
-                    writer.add_scalar(str(modelid)+'testacc', testacc.avg, epoch)
+                    writer.add_scalar(str(modelid)+'testacc', testacc.avg, epoch, display_name=str(modelid)+'testacc')
                 if testacc.avg > bestacc:
                     bestacc = testacc.avg
                     if bestname:
@@ -409,7 +409,7 @@ class FedMAD:
                     bestname = f'{savename[:-3]}_{(bestacc):.2f}.pt'
                     torch.save(model.state_dict(), bestname)
                     os.system(f'cp {bestname} {savename}')
-                logging.info(f'{modelid},Size={datasize},Epoch={epoch}: testacc={testacc.avg}, Best======{bestacc}======')
+                logging.info(f'{modelid}, Size={datasize}, Epoch={epoch}: testacc={testacc.avg}, Best======{bestacc}======')
             #
             scheduler.step()
 
@@ -426,7 +426,7 @@ class FedMAD:
             batch_logits = []
             for n in self.locallist:
                 tmodel = copy.deepcopy(self.localmodels[n])
-                stem, rb1, rb2, rb3, feat, logits = tmodel(images).detach()
+                logits = tmodel(images).detach()
                 batch_logits.append(logits)
                 del tmodel
             batch_logits = torch.stack(batch_logits).cpu()#(nl, nb, ncls)
@@ -452,7 +452,7 @@ class FedMAD:
         #if noise
 
         model.train()
-        stem, rb1, rb2, rb3, feat, central_logits = model(images)
+        central_logits = model(images)
         loss = self.criterion(central_logits, ensemble_logits)
         
         optimizer.zero_grad()

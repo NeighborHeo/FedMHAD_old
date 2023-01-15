@@ -1,10 +1,11 @@
+import utils
 import argparse
 import os
 from tensorboardX import SummaryWriter
 import logging
 from datetime import datetime
 import torch 
-import mymodels.resnet8 as resnet8
+import mymodels 
 from mydataset.data_cifar import *
 from torch.utils.data import DataLoader
 from utils.myfed import *
@@ -67,7 +68,7 @@ if __name__ == "__main__":
     handlers = [logging.StreamHandler()]
     args.logfile = f'{datetime.now().strftime("%m%d%H%M")}'+args.logfile
     
-    writer = SummaryWriter(comment=args.logfile)
+    writer = SummaryWriter(comment=args.logfile, comet_config={'disabled': False})
     if not os.path.isdir('./logs'):
         os.mkdir('./logs')
     if args.debug:
@@ -98,7 +99,8 @@ if __name__ == "__main__":
     logging.info("CREATE MODELS.......")
     gpu = [int(i) for i in range(torch.cuda.device_count())]
     logging.info(f'GPU: {args.gpu}')
-    model = resnet8.ResNet8(num_classes=args.N_class).cuda()
+    # model = resnet8(num_classes=args.N_class).cuda()
+    model = mymodels.ResNet8(num_classes=args.N_class).cuda()
     logging.info("totally {} paramerters".format(np.sum(x.numel() for x in model.parameters())))
     logging.info("Param size {}".format(np.sum([np.prod(x.size()) for name,x in model.named_parameters() if 'linear2' not in name])))
     

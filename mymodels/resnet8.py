@@ -76,7 +76,7 @@ class ResNet(nn.Module):
         self.flatten_feat = feat
         out  = self.linear1(feat)
 
-        return stem, rb1, rb2, rb3, feat, out
+        return out
 
     def get_attentions(self):
         inner_copy = self.inner.detach().clone()#b*512*8*8
