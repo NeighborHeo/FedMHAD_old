@@ -1,1 +1,1 @@
-from .data_cifar import *
+from . import data_cifar_224 as data_cifar

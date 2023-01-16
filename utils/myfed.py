@@ -10,7 +10,7 @@ import utils.utils as utils
 import copy
 import random
 import loss.loss as Loss
-import mydataset.data_cifar as data_cifar
+import mydataset
 
 class FedMAD:
     def __init__(self, central, distil_loader, private_data, val_loader, 
@@ -54,7 +54,7 @@ class FedMAD:
         
         # import ipdb; ipdb.set_trace()
         #path to save ckpt
-        self.rootdir = f'./checkpoints/{args.dataset}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}'
+        self.rootdir = f'./checkpoints/{args.dataset}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}+l{self.args.lossmode}'
         if not os.path.isdir(self.rootdir):
             os.makedirs(self.rootdir)
         if initpth:
@@ -353,7 +353,7 @@ class FedMAD:
     def trainLocal(self, savename, modelid=0):
         epochs = self.args.initepochs
         model = self.localmodels[modelid]
-        tr_dataset = data_cifar.Dataset_fromarray(self.private_data[modelid]['x'],self.private_data[modelid]['y'], train=True, verbose=False)
+        tr_dataset = mydataset.data_cifar.Dataset_fromarray(self.private_data[modelid]['x'],self.private_data[modelid]['y'], train=True, verbose=False)
         train_loader = DataLoader(
             dataset=tr_dataset, batch_size=self.args.batchsize, shuffle=True, num_workers=self.args.num_workers, sampler=None) 
         test_loader = self.val_loader

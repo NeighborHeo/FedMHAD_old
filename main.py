@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 import torch 
 import mymodels 
-from mydataset.data_cifar import *
+import mydataset 
 from torch.utils.data import DataLoader
 from utils.myfed import *
 
@@ -14,7 +14,9 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--debug', action='store_true') 
     parser.add_argument('--gpu', type=str, default ='0')
-    parser.add_argument('--num_workers', type=int, default = 8) 
+    parser.add_argument('--num_workers', type=int, default = 8)
+    parser.add_argument('--model_name', type=str, default = 'vit_tiny')
+    
     # data
     parser.add_argument('--dataset', type=str, default = 'cifar10')
     parser.add_argument('--datapath', type=str, default = './data/')
@@ -33,6 +35,7 @@ def get_args():
     parser.add_argument('--lrmin', type=float, default = 0.001)
     parser.add_argument('--distill_droprate', type=float, default = 0)
     parser.add_argument('--optim', type=str, default ='ADAM')
+    
     # fed setting
     parser.add_argument('--fedrounds', type=int, default = 200)
     parser.add_argument('--public_percent', type=float, default = 1.0) #ablation for c100 as public data
@@ -89,7 +92,7 @@ if __name__ == "__main__":
     assert args.dataset=='cifar10' or args.dataset=='cifar100'
     publicdata = 'cifar100' if args.dataset=='cifar10' else 'imagenet'
     args.N_class = 10 if args.dataset=='cifar10' else 100
-    priv_data, _, test_dataset, public_dataset, distill_loader = dirichlet_datasplit(
+    priv_data, _, test_dataset, public_dataset, distill_loader = mydataset.data_cifar.dirichlet_datasplit(
         args, privtype=args.dataset, publictype=publicdata, N_parties=args.N_parties, online=not args.oneshot, public_percent=args.public_percent)
     test_loader = DataLoader(
         dataset=test_dataset, batch_size=args.batchsize, shuffle=False, num_workers=args.num_workers, sampler=None)
@@ -100,7 +103,10 @@ if __name__ == "__main__":
     gpu = [int(i) for i in range(torch.cuda.device_count())]
     logging.info(f'GPU: {args.gpu}')
     # model = resnet8(num_classes=args.N_class).cuda()
-    model = mymodels.ResNet8(num_classes=args.N_class).cuda()
+    if args.model_name == 'resnet8':
+        model = mymodels.ResNet8(num_classes=args.N_class).cuda()
+    elif args.model_name == 'vit_tiny':
+        model = mymodels.vit_tiny_patch16_224(num_classes=args.N_class).cuda()
     logging.info("totally {} paramerters".format(np.sum(x.numel() for x in model.parameters())))
     logging.info("Param size {}".format(np.sum([np.prod(x.size()) for name,x in model.named_parameters() if 'linear2' not in name])))
     

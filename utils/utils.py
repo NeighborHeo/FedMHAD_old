@@ -121,6 +121,12 @@ def load_local_statedicts(model, filename):
         print("=>no checkpoint found at '{}'".format(filename))
 
 class Cutout(object):
+    """
+        이 함수는 이미지를 받아서 랜덤한 위치에 랜덤한 크기의 정사각형을 그린 후, 그 부분을 0으로 만들어서 반환합니다.
+    Args:
+        img (Torch.Tensor): 이미지
+        length (int): 정사각형의 한 변의 길이
+    """
     def __init__(self, length):
         self.length = length
 
