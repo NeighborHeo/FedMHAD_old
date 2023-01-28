@@ -1,6 +1,8 @@
+# %%
 import utils
-import argparse
 import os
+import pathlib
+import argparse
 from tensorboardX import SummaryWriter
 import logging
 from datetime import datetime
@@ -9,65 +11,13 @@ import mymodels
 import mydataset 
 from torch.utils.data import DataLoader
 from utils.myfed import *
-
-def get_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--debug', action='store_true') 
-    parser.add_argument('--gpu', type=str, default ='0')
-    parser.add_argument('--num_workers', type=int, default = 8)
-    parser.add_argument('--model_name', type=str, default = 'vit_tiny')
-    
-    # data
-    parser.add_argument('--dataset', type=str, default = 'cifar10')
-    parser.add_argument('--datapath', type=str, default = './data/')
-    # path
-    parser.add_argument('--logfile', default='', type=str)
-    parser.add_argument('--subpath', type=str, default ='', help="#subpath under localtraining folder to save central model") 
-
-    # local training
-    parser.add_argument('--N_parties', type=int, default = 20)
-    parser.add_argument('--alpha', type=float, default = 1.0)
-    parser.add_argument('--seed', type=int, default = 1)
-    parser.add_argument('--C', type=float, default = 1, help="#percent of locals selected in each fed communication round")
-    parser.add_argument('--fedinitepochs', type=int, default = 20) #epochs of local training
-    parser.add_argument('--batchsize', type=int, default =16)#128
-    parser.add_argument('--lr', type=float, default = 0.0025)#0.025
-    parser.add_argument('--lrmin', type=float, default = 0.001)
-    parser.add_argument('--distill_droprate', type=float, default = 0)
-    parser.add_argument('--optim', type=str, default ='ADAM')
-    
-    # fed setting
-    parser.add_argument('--fedrounds', type=int, default = 200)
-    parser.add_argument('--public_percent', type=float, default = 1.0) #ablation for c100 as public data
-    parser.add_argument('--oneshot', action='store_true')
-    parser.add_argument('--joint', action='store_true') #only valid when wo/ QN
-    parser.add_argument('--quantify', type=float, default = 0.0) #when w/ QN
-    parser.add_argument('--noisescale', type=float, default = 0.0) #when w/ QN
-
-    # fed training param
-    parser.add_argument('--disbatchsize', type=int, default = 512)  
-    parser.add_argument('--localepochs', type=int, default = 10)
-    # parser.add_argument('--initepochs', type=int, default = 500)
-    parser.add_argument('--initepochs', type=int, default = 300)
-    parser.add_argument('--initcentral', type=str, default = '', help="#ckpt used to init central model, import for co-distillation")
-    parser.add_argument('--wdecay', type=float, default = 0)
-    parser.add_argument('--steps_round', type=int, default = 10000)
-    parser.add_argument('--dis_lr', type=float, default = 1e-3) #1e-3
-    parser.add_argument('--dis_lrmin', type=float, default = 1e-3) #1e-5
-    parser.add_argument('--momentum', type=float, default = 0.9)
-    
-    #ensemble
-    parser.add_argument('--voteout', action='store_true')
-    parser.add_argument('--clscnt', type=int, default = 1, help="#local weight specific to class")
-    #loss
-    parser.add_argument('--lossmode', type=str, default = 'kl') #kl or l1
-    
-    return parser.parse_args()
-
+import yaml
+# %%
 if __name__ == "__main__":
-    args = get_args()
+    yamlfilepath = pathlib.Path(__file__).parent.absolute().joinpath('config.yaml')
+    args = yaml.load(yamlfilepath.open('r'), Loader=yaml.FullLoader)
+    args = argparse.Namespace(**args)
     os.environ['CUDA_VISIBLE_DEVICES']=args.gpu
-    
     handlers = [logging.StreamHandler()]
     args.logfile = f'{datetime.now().strftime("%m%d%H%M")}'+args.logfile
     
@@ -89,9 +39,19 @@ if __name__ == "__main__":
     
     # 1. data
     args.datapath = os.path.expanduser(args.datapath)
-    assert args.dataset=='cifar10' or args.dataset=='cifar100'
-    publicdata = 'cifar100' if args.dataset=='cifar10' else 'imagenet'
-    args.N_class = 10 if args.dataset=='cifar10' else 100
+    
+    if args.dataset == 'cifar10':
+        publicdata = 'cifar100'
+        args.N_class = 10
+    elif args.dataset == 'cifar100':
+        publicdata = 'imagenet'
+        args.N_class = 100
+    elif args.dataset == 'pascal_voc2012':
+        publicdata = 'mscoco'
+        args.N_class = 20
+    
+    assert args.dataset in ['cifar10', 'cifar100', 'pascal_voc2012']
+    
     priv_data, _, test_dataset, public_dataset, distill_loader = mydataset.data_cifar.dirichlet_datasplit(
         args, privtype=args.dataset, publictype=publicdata, N_parties=args.N_parties, online=not args.oneshot, public_percent=args.public_percent)
     test_loader = DataLoader(
