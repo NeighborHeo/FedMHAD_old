@@ -114,8 +114,6 @@ class FedMAD:
     def distill_onemodel_batch(self, model, images, selectN, localweight, optimizer, usecentral=True):
         if usecentral:
             ensemble_logits = self.central(images).detach()
-            if self.args.lossmode=='at':
-                grad_cam = 
         else:
             #get local
             total_logits = []
