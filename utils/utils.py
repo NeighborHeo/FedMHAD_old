@@ -82,24 +82,114 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
+# def accuracy(output, target, topk=(1,)):
+#     """
+#     usage:
+#     prec1,prec5=accuracy(output,target,topk=(1,5))
+#     """
+#     maxk = max(topk)
+#     batchsize = target.size(0)
+#     if len(target.shape) == 2: #multil label
+#         output_mask = output > 0.5
+#         correct = (output_mask == target).sum()
+#         return [100.0*correct.float() / target.numel()]
+#     _, pred = output.topk(maxk, 1, True, True)
+#     pred = pred.t()
+#     correct = pred.eq(target.view(1, -1).expand_as(pred))
+#     res = []
+#     for k in topk:
+#         correct_k = correct[:k].view(-1).float().sum(0)
+#         res.append(correct_k.mul_(100.0 / batchsize).item())
+#     return res
+
+# -----------------------------------------------
+def getAccuracy(y_true, y_pred):
+    temp = 0
+    for i in range(y_true.shape[0]):
+        temp += sum(np.logical_and(y_true[i], y_pred[i])) / sum(np.logical_or(y_true[i], y_pred[i]))
+    return temp / y_true.shape[0]
+
+def get_Hamming_Loss(y_true, y_pred):
+    temp=0
+    for i in range(y_true.shape[0]):
+        temp += np.size(y_true[i] == y_pred[i]) - np.count_nonzero(y_true[i] == y_pred[i])
+    return temp/(y_true.shape[0] * y_true.shape[1])
+
+def getPrecision(y_true, y_pred):
+    temp = 0
+    for i in range(y_true.shape[0]):
+        if sum(y_true[i]) == 0:
+            continue
+        temp+= sum(np.logical_and(y_true[i], y_pred[i]))/ sum(y_true[i])
+    return temp/ y_true.shape[0]
+
+def getRecall(y_true, y_pred):
+    temp = 0
+    for i in range(y_true.shape[0]):
+        if sum(y_pred[i]) == 0:
+            continue
+        temp+= sum(np.logical_and(y_true[i], y_pred[i]))/ sum(y_pred[i])
+    return temp/ y_true.shape[0]
+
+def getF1score(y_true, y_pred):
+    temp = 0
+    for i in range(y_true.shape[0]):
+        if (sum(y_true[i]) == 0) and (sum(y_pred[i]) == 0):
+            continue
+        temp+= (2*sum(np.logical_and(y_true[i], y_pred[i])))/ (sum(y_true[i])+sum(y_pred[i]))
+    return temp/ y_true.shape[0]
+
+def getMetrics(y_true, y_score, th):
+    y_pred = (y_score > th).astype(int)
+    acc = getAccuracy(y_true, y_pred)
+    pre = getPrecision(y_true, y_pred)
+    rec = getRecall(y_true, y_pred)
+    f1 = getF1score(y_true, y_pred)
+    return acc, pre, rec, f1
+# -----------------------------------------------
+
+# def accuracy(output, target, topk=(1,)):
+#     """
+#     usage:
+#     prec1,prec5=accuracy(output,target,topk=(1,5))
+#     """
+#     maxk = max(topk)
+#     batchsize = target.size(0)
+#     if len(target.shape) == 2: #multil label
+#         output_mask = output > 0.5
+#         correct = (output_mask == target).sum()
+#         return [100.0*correct.float() / target.numel()]
+#     _, pred = output.topk(maxk, 1, True, True)
+#     pred = pred.t()
+#     correct = pred.eq(target.view(1, -1).expand_as(pred))
+#     res = []
+#     for k in topk:
+#         correct_k = correct[:k].view(-1).float().sum(0)
+#         res.append(correct_k.mul_(100.0 / batchsize).item())
+#     return res
+
 def accuracy(output, target, topk=(1,)):
     """
     usage:
     prec1,prec5=accuracy(output,target,topk=(1,5))
     """
-    maxk = max(topk)
-    batchsize = target.size(0)
-    if len(target.shape) == 2: #multil label
-        output_mask = output > 0.5
-        correct = (output_mask == target).sum()
-        return [100.0*correct.float() / target.numel()]
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
+    print(output.shape, target.shape)
+    
+    th_ls = [0.1 * i for i in range(10)]
+    opt_th = 0
+    best_acc = 0
+    for th in th_ls:
+        acc, pre, rec, f1 = getMetrics(target, output, th)
+        if acc > best_acc:
+            best_acc = acc
+            opt_th = th
+
+    acc, pre, rec, f1 = getMetrics(target, output, opt_th)
+    print(f"opt_th: {opt_th:.2f}, best_acc: {best_acc:.2f}, pre: {pre:.2f}, rec: {rec:.2f}, f1: {f1:.2f}")
+        
     res = []
     for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / batchsize).item())
+        res.append(acc)
     return res
 
 def get_model_size(model):

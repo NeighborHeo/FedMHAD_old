@@ -9,7 +9,7 @@ import torch.optim as optim
 import utils.utils as utils
 import copy
 import random
-import loss.loss as Loss
+import loss as Loss
 import mydataset
 
 class FedMAD:
@@ -30,13 +30,19 @@ class FedMAD:
         for n in range(self.N_parties):
             totalN.append(private_data[n]['x'].shape[0])
         totalN = torch.tensor(totalN) #nlocal
-        assert totalN.sum() == 50000
+        # assert totalN.sum() == 50000
+        print('totalN', totalN)
         self.totalN = totalN.cuda()#nlocal*1*1
         countN = np.zeros((self.N_parties, self.args.N_class))
         for n in range(self.N_parties):
+            counterclass = np.sum(private_data[n]['y'], axis=0)
             for m in range(self.args.N_class):
-                countN[n][m] = (self.private_data[n]['y']==m).sum()
-        assert countN.sum() == 50000
+                # print('n : ', n, 'm : ', m, 'private_data[n][y] : ', private_data[n]['y'])
+                # countN[n][m] = (self.private_data[n]['y'] == m).sum()
+                countN[n][m] = counterclass[m]
+                
+        # assert countN.sum() == 50000
+        print('countN', countN)
         self.countN = torch.tensor(countN).cuda()      
         self.locallist= list(range(0, self.N_parties))# local number list
         self.clscnt = args.clscnt# if ensemble is weighted by number of local sample
@@ -45,6 +51,10 @@ class FedMAD:
             self.criterion = torch.nn.L1Loss(reduce=True)
         elif args.lossmode=='kl': 
             self.criterion = Loss.kl_loss(T=3, singlelabel=True)
+        elif args.lossmode=='at':
+            self.sub_criterion = Loss.at_loss()
+        elif args.lossmode=='mha':
+            self.sub_criterion = Loss.mha_loss()
         else:
             raise ValueError
         
@@ -82,6 +92,7 @@ class FedMAD:
                 if os.path.exists(savename):
                     #self.localmodels[n].load_state_dict(self.best_statdict, strict=True)
                     logging.info(f'Loading Local{n}......')
+                    print('filepath : ', savename)
                     utils.load_dict(savename, self.localmodels[n])
                     acc = self.validate_model(self.localmodels[n])
                 else:
@@ -103,6 +114,8 @@ class FedMAD:
     def distill_onemodel_batch(self, model, images, selectN, localweight, optimizer, usecentral=True):
         if usecentral:
             ensemble_logits = self.central(images).detach()
+            if self.args.lossmode=='at':
+                grad_cam = 
         else:
             #get local
             total_logits = []
@@ -118,9 +131,16 @@ class FedMAD:
                 ensemble_logits = (total_logits*localweight).detach().sum(dim=0) #batch*ncls
 
         model.train()
+        m = torch.nn.Sigmoid()
         output = model(images)
-        loss = self.criterion(output, ensemble_logits)
         
+        # case : at_loss 
+        if self.args.lossmode=='at':
+            grad_cam = model.module.get_class_activation_map(images, ensemble_logits)
+            union_cam, intersection_cam = Loss.weight_gradcam(grad_cam, countN = None)
+            at_loss = self.sub_criterion(union_cam, intersection_cam)
+        loss = self.criterion(m(output), ensemble_logits)
+        loss = loss + at_loss
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -321,15 +341,24 @@ class FedMAD:
     
     def validate_model(self, model):
         model.eval()
-        testacc = utils.AverageMeter()
+        # testacc = utils.AverageMeter()
+        m = torch.nn.Sigmoid()
+        output_list = []
+        target_list = []
         with torch.no_grad():
             for i, (images, target, _) in enumerate(self.val_loader):
                 images = images.cuda()
                 target = target.cuda()
                 output = model(images)
-                acc, = utils.accuracy(output.detach(), target)
-                testacc.update(acc)
-        return testacc.avg    
+                
+                output_list.append(m(output).detach().cpu().numpy())
+                target_list.append(target.detach().cpu().numpy())
+                
+                # testacc.update(acc)
+        output = np.concatenate(output_list, axis=0)
+        target = np.concatenate(target_list, axis=0)
+        acc, = utils.accuracy(output, target)
+        return acc
 
     def validateLocalTeacher(self, selectN, localweight):   
         testacc = utils.AverageMeter()
@@ -353,17 +382,23 @@ class FedMAD:
     def trainLocal(self, savename, modelid=0):
         epochs = self.args.initepochs
         model = self.localmodels[modelid]
-        tr_dataset = mydataset.data_cifar.Dataset_fromarray(self.private_data[modelid]['x'],self.private_data[modelid]['y'], train=True, verbose=False)
+        # tr_dataset = mydataset.data_cifar.Dataset_fromarray(self.private_data[modelid]['x'],self.private_data[modelid]['y'], train=True, verbose=False)
+        # print('size of dataset', self.private_data[modelid]['x'].shape, self.private_data[modelid]['y'].shape)
+        tr_dataset = mydataset.data_cifar.mydataset(self.private_data[modelid]['x'], self.private_data[modelid]['y'], train=True, verbose=False)
         train_loader = DataLoader(
             dataset=tr_dataset, batch_size=self.args.batchsize, shuffle=True, num_workers=self.args.num_workers, sampler=None) 
         test_loader = self.val_loader
         args = self.args
         writer = self.writer
         datasize = len(tr_dataset)
-        criterion = nn.CrossEntropyLoss() #include softmax
+        # criterion = nn.CrossEntropyLoss() #include softmax
+        # multi label
+        criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
         optimizer = optim.SGD(model.parameters(), args.lr,
                                     momentum=0.9,
                                     weight_decay=3e-4)
+        m = torch.nn.Sigmoid()
+
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, float(epochs), eta_min=args.lrmin,)
         #
@@ -375,12 +410,13 @@ class FedMAD:
             tracc = utils.AverageMeter()
             trloss = utils.AverageMeter()
             for i, (images, target, _) in enumerate(train_loader):
+                # print(images.shape, target.shape)
                 images = images.cuda()
                 target = target.cuda()
                 output = model(images)
                 # import ipdb; ipdb.set_trace()
-                loss = criterion(output, target)
-                acc,  = utils.accuracy(output, target)
+                loss = criterion(m(output), target)
+                acc,  = utils.accuracy(m(output), target)
                 tracc.update(acc)
                 trloss.update(loss.item())
                 optimizer.zero_grad()
@@ -395,10 +431,11 @@ class FedMAD:
             testacc = utils.AverageMeter()
             with torch.no_grad():
                 for i, (images, target, _) in enumerate(test_loader):
+                    # print(images.shape, target.shape)
                     images = images.cuda()
                     target = target.cuda()
                     output = model(images)
-                    acc, = utils.accuracy(output, target)
+                    acc, = utils.accuracy(m(output), target)
                     testacc.update(acc)
                 if writer is not None:
                     writer.add_scalar(str(modelid)+'testacc', testacc.avg, epoch, display_name=str(modelid)+'testacc')
@@ -420,6 +457,7 @@ class FedMAD:
         save local prediction for one-shot distillation
         """
         total_logits = []
+        m = torch.nn.Sigmoid()
         for i, (images, _, idx) in enumerate(self.distil_loader):
             # import ipdb; ipdb.set_trace()
             images = images.cuda()
@@ -427,12 +465,15 @@ class FedMAD:
             for n in self.locallist:
                 tmodel = copy.deepcopy(self.localmodels[n])
                 logits = tmodel(images).detach()
-                batch_logits.append(logits)
+                batch_logits.append(m(logits))
                 del tmodel
             batch_logits = torch.stack(batch_logits).cpu()#(nl, nb, ncls)
             total_logits.append(batch_logits)
         self.total_logits = torch.cat(total_logits,dim=1).permute(1,0,2) #(nsample, nl, ncls)
         if self.args.dataset=='cifar10':
+            assert public_dataset.aug == False
+            public_dataset.aug = True
+        if self.args.dataset=='pascal_voc2012':
             assert public_dataset.aug == False
             public_dataset.aug = True
         
@@ -453,7 +494,8 @@ class FedMAD:
 
         model.train()
         central_logits = model(images)
-        loss = self.criterion(central_logits, ensemble_logits)
+        m = torch.nn.Sigmoid()
+        loss = self.criterion(m(central_logits), ensemble_logits)
         
         optimizer.zero_grad()
         loss.backward()

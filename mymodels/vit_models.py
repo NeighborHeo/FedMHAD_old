@@ -9,6 +9,12 @@ from timm.scheduler.cosine_lr import CosineLRScheduler
 from functools import partial
 from time import time
 
+# gradcam (get the attention maps)
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam import GuidedBackpropReLUModel
+from pytorch_grad_cam.utils.image import show_cam_on_image, preprocess_image
+from pytorch_grad_cam.ablation_layer import AblationLayerVit
+
 class PatchEmbed(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768):
         super().__init__()
@@ -166,6 +172,21 @@ class VisionTransformer(nn.Module):
         x = self.head(x[:, 0])
         return x
     
+    def get_class_activation_map(self, x, y):
+        self.target_layer = [self.blocks[-1].norm1]
+        targets = None 
+        def reshape_transform(tensor, height=14, width=14):
+            result = tensor[:, 1:, :].reshape(tensor.size(0),
+                                            height, width, tensor.size(2))
+            # Bring the channels to the first dimension,
+            # like in CNNs.
+            result = result.transpose(2, 3).transpose(1, 2)
+            return result
+        cam = GradCAM(model=self, target_layers=self.target_layer, use_cuda=True, reshape_transform=reshape_transform)
+        cam.batch_size = 16
+        grayscale_cam = cam(input_tensor=x, targets=targets, aug_smooth=True, eigen_smooth=True)
+        return grayscale_cam
+        
     @torch.no_grad()
     def get_attention_maps(self, x):
         x = self.patch_embed(x)
@@ -175,7 +196,7 @@ class VisionTransformer(nn.Module):
         x = self.pos_drop(x)
         attn_maps = []
         for blk in self.blocks:
-            x, attn_map = blk.attn(x, return_attn=True)
+            _, attn_map = blk.attn(x, return_attn=True)
             attn_maps.append(attn_map)
             x = blk(x)
         return attn_maps

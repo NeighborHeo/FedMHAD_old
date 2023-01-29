@@ -1,2 +1,1 @@
-from .resnet8 import *
-from .vit_models import *
+from .mymodel import define_model

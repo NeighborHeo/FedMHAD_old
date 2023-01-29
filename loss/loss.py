@@ -24,9 +24,7 @@ class kl_loss(torch.nn.Module):
 
 def weight_psedolabel(logits, countN, noweight=False, clscount=False, votethresh=0, singlabel=True):#nlcoal*batch*nclass
     #softLogits = torch.nn.Softmax(dim=2)(logits)
-    nlocal = logits.shape[0]
-    nbatch = logits.shape[1]
-    ncls = logits.shape[2]
+    nlocal, nbatch, ncls = logits.shape
     labels = logits.argmax(axis=2)#nlcoal*batch
     votes = torch.zeros((logits.shape[1:]))#nbatch*nclass
     for clsn in range(logits.shape[2]):

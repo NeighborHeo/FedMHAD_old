@@ -63,15 +63,10 @@ if __name__ == "__main__":
     gpu = [int(i) for i in range(torch.cuda.device_count())]
     logging.info(f'GPU: {args.gpu}')
     # model = resnet8(num_classes=args.N_class).cuda()
-    if args.model_name == 'resnet8':
-        model = mymodels.ResNet8(num_classes=args.N_class).cuda()
-    elif args.model_name == 'vit_tiny':
-        model = mymodels.vit_tiny_patch16_224(num_classes=args.N_class).cuda()
+    model = mymodels.define_model(modelname=args.model_name, num_classes=args.N_class)
+
     logging.info("totally {} paramerters".format(np.sum(x.numel() for x in model.parameters())))
     logging.info("Param size {}".format(np.sum([np.prod(x.size()) for name,x in model.named_parameters() if 'linear2' not in name])))
-    
-    if len(gpu)>1:
-        model = nn.DataParallel(model, device_ids=gpu)
     
     # 3. fed training
     fed = FedMAD(model, distill_loader, priv_data, test_loader, writer, args)
