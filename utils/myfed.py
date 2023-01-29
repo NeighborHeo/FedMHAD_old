@@ -51,9 +51,12 @@ class FedMAD:
             self.criterion = torch.nn.L1Loss(reduce=True)
         elif args.lossmode=='kl': 
             self.criterion = Loss.kl_loss(T=3, singlelabel=True)
-        elif args.lossmode=='at':
+        else:
+            raise ValueError
+            
+        if args.sublossmode=='at':
             self.sub_criterion = Loss.at_loss()
-        elif args.lossmode=='mha':
+        elif args.sublossmode=='mha':
             self.sub_criterion = Loss.mha_loss()
         else:
             raise ValueError
@@ -111,38 +114,75 @@ class FedMAD:
         else:
             raise ValueError
 
-    def distill_onemodel_batch(self, model, images, selectN, localweight, optimizer, usecentral=True):
+    def getTotalGradcam(self, model, images, selectN, usecentral=True):
+        total_gradcam = [] 
+        for n in selectN:
+            tmodel = copy.deepcopy(self.localmodels[n])
+            gradcam = tmodel.module.get_class_activation_map(images, y=None)
+            total_gradcam.append(gradcam)
+            del tmodel
+        return total_gradcam
+
+    def getTotalMultiHeadAttentionMap(self, model, images, selectN, usecentral=True):
+        total_mha = [] 
+        for n in selectN:
+            tmodel = copy.deepcopy(self.localmodels[n])
+            mha, th_attn = tmodel.module.get_attention_maps_postprocessing(images)
+            total_mha.append(mha) # batch * nhead * 224 * 224
+            del tmodel
+        return total_mha # n_client * batch * nhead * 224 * 224
+
+    def getEnsemble_logits(self, model, images, selectN, localweight, usecentral=True):
         if usecentral:
             ensemble_logits = self.central(images).detach()
         else:
             #get local
             total_logits = []
+            m = torch.nn.Sigmoid()
             for n in selectN:
                 tmodel = copy.deepcopy(self.localmodels[n])
                 logits = tmodel(images).detach()
-                total_logits.append(logits)
+                total_logits.append(m(logits))
                 del tmodel
-            total_logits = torch.stack(total_logits) #nlocal*batch*ncls
+            total_logits = torch.stack(total_logits)
             if self.voteout:
                 ensemble_logits = Loss.weight_psedolabel(total_logits, self.countN[selectN], noweight=True).detach()
-            else:    
+            else:
                 ensemble_logits = (total_logits*localweight).detach().sum(dim=0) #batch*ncls
+        return ensemble_logits
+
+    def distill_onemodel_batch(self, model, images, selectN, localweight, optimizer, usecentral=True):
+        ''' for ensemble logits '''
+        ensemble_logits = self.getEnsemble_logits(model, images, selectN, localweight, usecentral=usecentral)
+
+        ''' for subloss '''
+        if self.args.sublossmode=='at':
+            total_gradcam = self.getTotalGradcam(model, images, selectN, usecentral=usecentral)
+            union, intersection = Loss.weight_gradcam(total_gradcam, self.countN)
+        if self.args.sublossmode=='mha':
+            total_mha = self.getTotalMultiHeadAttentionMap(model, images, selectN, usecentral=usecentral)
+            union, intersection = Loss.weight_multihead_attention_map(total_mha, self.countN)
 
         model.train()
         m = torch.nn.Sigmoid()
         output = model(images)
-        
-        # case : at_loss 
-        if self.args.lossmode=='at':
-            grad_cam = model.module.get_class_activation_map(images, ensemble_logits)
-            union_cam, intersection_cam = Loss.weight_gradcam(grad_cam, countN = None)
-            at_loss = self.sub_criterion(union_cam, intersection_cam)
         loss = self.criterion(m(output), ensemble_logits)
-        loss = loss + at_loss
+
+        if self.args.sublossmode=='at':
+            gradcam = model.module.get_class_activation_map(images, y=None)
+            sub_loss = self.sub_criterion(union, intersection, gradcam)
+        elif self.args.sublossmode=='mha':
+            mha, th_attn = model.module.get_attention_maps_postprocessing(images)
+            sub_loss = self.sub_criterion(union, intersection, mha)
+        else : 
+            sub_loss = torch.tensor(0.0).cuda()
+        print('loss', loss, 'sub_loss', sub_loss, 'total_loss', loss+sub_loss)
+        loss = loss + sub_loss
+        
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        return loss
+        return loss, sub_loss
 
     def distill_local_central(self):
         args = self.args
@@ -184,11 +224,12 @@ class FedMAD:
                         localweight = 1.0*totalN/totalN.sum()
                         localweight = localweight.unsqueeze(dim=1).unsqueeze(dim=2)#nlocal*1*1
                 
-                loss = self.distill_onemodel_batch(self.central, images, selectN, localweight, optimizer, usecentral=False) 
+                loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, localweight, optimizer, usecentral=False) 
                 step += 1
                 acc = self.validate_model(self.central)
                 if self.writer is not None:
                     self.writer.add_scalar('loss', loss.item(), step, display_name='loss')
+                    self.writer.add_scalar('at_loss', subloss.item(), step, display_name='at_loss')
                     self.writer.add_scalar('DisACC', acc, step, display_name='DisACC')
                 if acc>bestacc:
                     if bestname:
@@ -271,7 +312,7 @@ class FedMAD:
         for epoch in range(self.max_epochs_round):
             for i, (images, _, _) in enumerate(self.distil_loader):
                 images = images.cuda()
-                loss = self.distill_onemodel_batch(self.central, images, selectN, selectweight, optimizer, usecentral=False)
+                loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, selectweight, optimizer, usecentral=False)
                 acc = self.validate_model(self.central)
                 step += 1
                 stop, best = earlyStop.update(step, acc)
@@ -308,7 +349,7 @@ class FedMAD:
         for epoch in range(0, self.max_epochs_round):
             for i, (images, _, _) in enumerate(self.distil_loader):
                 images = images.cuda()
-                loss = self.distill_onemodel_batch(model, images, selectN, localweight, optimizer, usecentral=usecentral)
+                loss, subloss = self.distill_onemodel_batch(model, images, selectN, localweight, optimizer, usecentral=usecentral)
                 step += 1
                 globalstep += 1
                 acc = self.validate_model(model)

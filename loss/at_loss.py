@@ -22,10 +22,11 @@ class at_loss(torch.nn.Module):
         # target : central gradcam image
         p1, b1 = 10, 0.6
         p2, b2 = 10, 0.3
-        t_A = torch.sigmoid(p1*(target-b1))
+        target = torch.tensor(target)
+        t_A = torch.sigmoid(-p1*(target-b1))
         # Weighted Average sum
         loss1 = - torch.sum(torch.dot(t_A.view(-1), inter_input.view(-1)))/torch.sum(t_A)
-        t_U = torch.sigmoid(p2*(union_input-b2))
+        t_U = torch.sigmoid(-p2*(union_input-b2))
         loss2 = - torch.sum(torch.dot(t_U.view(-1), target.view(-1)))/torch.sum(target)
         print('intersection loss : ', loss1, 'union loss : ', loss2)
         return loss1 + loss2

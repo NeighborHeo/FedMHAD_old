@@ -34,5 +34,6 @@ momentum: 0.9 # help="momentum"
 voteout: False  # help="vote out"
 clscnt: 1 # help="local weight specific to class"
 lossmode: kl # help="kl or l1"
+sublossmode: mha # help="at or mha"
  
   

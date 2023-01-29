@@ -144,6 +144,17 @@ class VisionTransformer(nn.Module):
         trunc_normal_(self.cls_token, std=.02)
         self.apply(self._init_weights)
 
+        # for gradcam
+        self.target_layer = [self.blocks[-1].norm1]
+        def reshape_transform(tensor, height=14, width=14):
+            result = tensor[:, 1:, :].reshape(tensor.size(0),
+                                            height, width, tensor.size(2))
+            # Bring the channels to the first dimension,
+            # like in CNNs.
+            result = result.transpose(2, 3).transpose(1, 2)
+            return result
+        self.cam = GradCAM(model=self, target_layers=self.target_layer, use_cuda=True, reshape_transform=reshape_transform)
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
@@ -173,22 +184,19 @@ class VisionTransformer(nn.Module):
         return x
     
     def get_class_activation_map(self, x, y):
-        self.target_layer = [self.blocks[-1].norm1]
+        # runtime 
+        import time 
+        start = time.time()
         targets = None 
-        def reshape_transform(tensor, height=14, width=14):
-            result = tensor[:, 1:, :].reshape(tensor.size(0),
-                                            height, width, tensor.size(2))
-            # Bring the channels to the first dimension,
-            # like in CNNs.
-            result = result.transpose(2, 3).transpose(1, 2)
-            return result
-        cam = GradCAM(model=self, target_layers=self.target_layer, use_cuda=True, reshape_transform=reshape_transform)
-        cam.batch_size = 16
-        grayscale_cam = cam(input_tensor=x, targets=targets, aug_smooth=True, eigen_smooth=True)
+        self.cam.batch_size = 16
+        grayscale_cam = self.cam(input_tensor=x, targets=targets, aug_smooth=True, eigen_smooth=True)
+        print('runtime: ', time.time() - start)
         return grayscale_cam
         
     @torch.no_grad()
     def get_attention_maps(self, x):
+        # import time 
+        # start = time.time()
         x = self.patch_embed(x)
         cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
@@ -199,7 +207,30 @@ class VisionTransformer(nn.Module):
             _, attn_map = blk.attn(x, return_attn=True)
             attn_maps.append(attn_map)
             x = blk(x)
+        # print('runtime: ', time.time() - start)
         return attn_maps
+
+    def get_attention_maps_postprocessing(self, x):
+        mha = self.get_attention_maps(x)[-1]
+        w_featmap = x.shape[-2] // 16
+        h_featmap = x.shape[-1] // 16
+        nh = mha.shape[1] # number of head
+        # we keep only the output patch attention
+        mha = mha[0, :, 0, 1:].reshape(nh, -1)
+        # we keep only a certain percentage of the mass
+        val, idx = torch.sort(mha)
+        val /= torch.sum(val, dim=1, keepdim=True)
+        cumval = torch.cumsum(val, dim=1)
+        th_attn = cumval > (1 - 0.6)
+        idx2 = torch.argsort(idx)
+        for head in range(nh):
+            th_attn[head] = th_attn[head][idx2[head]]
+        th_attn = th_attn.reshape(nh, w_featmap, h_featmap).float()
+        # interpolate
+        th_attn = nn.functional.interpolate(th_attn.unsqueeze(0), scale_factor=16, mode="nearest")[0].cpu().numpy()
+        mha = mha.reshape(nh, w_featmap, h_featmap)
+        mha = nn.functional.interpolate(mha.unsqueeze(0), scale_factor=16, mode="nearest")[0].cpu().numpy()
+        return mha, th_attn
 
 def vit_tiny_patch16_224(pretrained=False, patch_size=16, num_heads=3, **kwargs):
     model = VisionTransformer(
