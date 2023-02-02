@@ -213,6 +213,8 @@ class FedMAD:
         
         step = 0
         for epoch in range(0, args.fedrounds):
+            loss_list = []
+            subloss_list = []
             for i, (images, _, _) in enumerate(self.distil_loader):
                 images = images.cuda()
                 countN = self.countN
@@ -229,21 +231,27 @@ class FedMAD:
                         localweight = localweight.unsqueeze(dim=1).unsqueeze(dim=2)#nlocal*1*1
                 
                 loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, localweight, optimizer, usecentral=False) 
+                loss_list.append(loss.item())
+                subloss_list.append(subloss.item())
                 step += 1
-                acc = self.validate_model(self.central)
-                if self.writer is not None:
-                    self.writer.add_scalar('loss', loss.item(), step, display_name='loss')
-                    self.writer.add_scalar('at_loss', subloss.item(), step, display_name='at_loss')
-                    self.writer.add_scalar('DisACC', acc, step, display_name='DisACC')
-                if acc>bestacc:
-                    if bestname:
-                        os.system(f'rm {bestname}')
-                    bestacc = acc
-                    bestname = f'{savename}_i{step}_{(bestacc):.2f}.pt'
-                    torch.save(self.central.state_dict(), bestname)
-                    logging.info(f'========Best...Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
+            
+            loss = np.mean(loss_list)
+            subloss = np.mean(subloss_list)
+            acc = self.validate_model(self.central)
+            
+            if self.writer is not None:
+                self.writer.add_scalar('loss', loss, epoch, display_name='loss')
+                self.writer.add_scalar('at_loss', subloss, epoch, display_name='at_loss')
+                self.writer.add_scalar('DisACC', acc, epoch, display_name='DisACC')
+            if acc>bestacc:
+                if bestname:
+                    os.system(f'rm {bestname}')
+                bestacc = acc
+                bestname = f'{savename}_e{epoch}_{(bestacc):.2f}.pt'
+                torch.save(self.central.state_dict(), bestname)
+                logging.info(f'========Best...Epoch{epoch}, Acc{(acc):.2f}')
             scheduler.step()
-            logging.info(f'Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
+            logging.info(f'Epoch{epoch}, Acc{(acc):.2f}')
       
     def distill_local_central_joint(self):
         if self.args.initcentral:
