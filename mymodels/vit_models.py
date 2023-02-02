@@ -1,3 +1,11 @@
+import sys
+# gradcam (get the attention maps)
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam import GuidedBackpropReLUModel
+from pytorch_grad_cam.utils.image import show_cam_on_image, preprocess_image
+from pytorch_grad_cam.ablation_layer import AblationLayerVit
+
+from collections import OrderedDict 
 import torch
 import torch.nn as nn
 import torchvision
@@ -8,12 +16,6 @@ from timm.models import create_model
 from timm.scheduler.cosine_lr import CosineLRScheduler
 from functools import partial
 from time import time
-
-# gradcam (get the attention maps)
-from pytorch_grad_cam import GradCAM
-from pytorch_grad_cam import GuidedBackpropReLUModel
-from pytorch_grad_cam.utils.image import show_cam_on_image, preprocess_image
-from pytorch_grad_cam.ablation_layer import AblationLayerVit
 
 class PatchEmbed(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768):
@@ -146,15 +148,7 @@ class VisionTransformer(nn.Module):
 
         # for gradcam
         self.target_layer = [self.blocks[-1].norm1]
-        def reshape_transform(tensor, height=14, width=14):
-            result = tensor[:, 1:, :].reshape(tensor.size(0),
-                                            height, width, tensor.size(2))
-            # Bring the channels to the first dimension,
-            # like in CNNs.
-            result = result.transpose(2, 3).transpose(1, 2)
-            return result
-        self.cam = GradCAM(model=self, target_layers=self.target_layer, use_cuda=True, reshape_transform=reshape_transform)
-
+        
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
@@ -185,18 +179,24 @@ class VisionTransformer(nn.Module):
     
     def get_class_activation_map(self, x, y):
         # runtime 
-        import time 
-        start = time.time()
+        start = time()
         targets = None 
-        self.cam.batch_size = 16
-        grayscale_cam = self.cam(input_tensor=x, targets=targets, aug_smooth=True, eigen_smooth=True)
-        print('runtime: ', time.time() - start)
+        cam.batch_size = 16
+        def reshape_transform(tensor, height=14, width=14):
+            result = tensor[:, 1:, :].reshape(tensor.size(0),
+                                            height, width, tensor.size(2))
+            # Bring the channels to the first dimension,
+            # like in CNNs.
+            result = result.transpose(2, 3).transpose(1, 2)
+            return result
+        cam = GradCAM(model=self, target_layers=self.target_layer, use_cuda=True, reshape_transform=reshape_transform)
+        grayscale_cam = cam(input_tensor=x, targets=targets, aug_smooth=True, eigen_smooth=True)
+        print('runtime: ', time() - start)
         return grayscale_cam
         
     @torch.no_grad()
     def get_attention_maps(self, x):
-        # import time 
-        # start = time.time()
+        # start = time()
         x = self.patch_embed(x)
         cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
@@ -207,16 +207,22 @@ class VisionTransformer(nn.Module):
             _, attn_map = blk.attn(x, return_attn=True)
             attn_maps.append(attn_map)
             x = blk(x)
-        # print('runtime: ', time.time() - start)
+        # print('runtime: ', time() - start)
         return attn_maps
 
     def get_attention_maps_postprocessing(self, x):
+        # x.shape = (batch, channel, height, width) = 16, 3, 197, 197
         mha = self.get_attention_maps(x)[-1]
+        
+        # mha.shape = (batch, head, height, width) = 16, 3, 197, 197
+        print(x.shape, mha.shape)
         w_featmap = x.shape[-2] // 16
         h_featmap = x.shape[-1] // 16
         nh = mha.shape[1] # number of head
+        # w_featmap = 14, h_featmap = 14, nh = 3
         # we keep only the output patch attention
         mha = mha[0, :, 0, 1:].reshape(nh, -1)
+        # mha.shape = 3, 196(14*14)
         # we keep only a certain percentage of the mass
         val, idx = torch.sort(mha)
         val /= torch.sum(val, dim=1, keepdim=True)
@@ -236,16 +242,45 @@ def vit_tiny_patch16_224(pretrained=False, patch_size=16, num_heads=3, **kwargs)
     model = VisionTransformer(
         patch_size=patch_size, num_heads=num_heads, embed_dim=192, depth=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    if pretrained:
+        checkpoint = torch.hub.load_state_dict_from_url(
+            url="https://dl.fbaipublicfiles.com/deit/deit_tiny_patch16_224-a1311bcf.pth",
+            map_location="cpu", check_hash=True
+        )
+        state_dict = checkpoint["model"]
+        temp = OrderedDict()
+        for i, j in state_dict.items():   # search all key from model
+            name = i.replace("head.","")  # change key that doesn't match
+            temp[name] = j
+        model.load_state_dict(temp, strict=False)
     return model
 
 def vit_small_patch16_224(pretrained=False, patch_size=16, num_heads=6, **kwargs):
     model = VisionTransformer(
         patch_size=patch_size, num_heads=num_heads, embed_dim=384, depth=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    if pretrained:
+        checkpoint = torch.hub.load_state_dict_from_url(
+            url="https://dl.fbaipublicfiles.com/deit/deit_small_patch16_224-cd65a155.pth",
+            map_location="cpu", check_hash=True
+        )
+        # model.load_state_dict(checkpoint["model"])
+        state_dict = checkpoint["model"]
+        temp = OrderedDict()
+        for i, j in state_dict.items():   # search all key from model
+            name = i.replace("head.","")  # change key that doesn't match
+            temp[name] = j
+        model.load_state_dict(temp, strict=False)
     return model
 
 def vit_base_patch16_224(pretrained=False, patch_size=16, num_heads=12, **kwargs):
     model = VisionTransformer(
         patch_size=patch_size, num_heads=num_heads, embed_dim=768, depth=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    if pretrained:
+        checkpoint = torch.hub.load_state_dict_from_url(
+            url="https://dl.fbaipublicfiles.com/deit/deit_base_patch16_224-b5f2ef4d.pth",
+            map_location="cpu", check_hash=True
+        )
+        model.load_state_dict(checkpoint["model"])
     return model

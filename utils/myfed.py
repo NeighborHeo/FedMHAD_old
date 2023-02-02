@@ -25,6 +25,9 @@ class FedMAD:
         self.writer = writer
         self.args = args
         
+        self.prevacc = 0
+        self.prev_model_state_dist = {}
+        
         # ensemble and loss
         totalN = []
         for n in range(self.N_parties):
@@ -59,7 +62,7 @@ class FedMAD:
         elif args.sublossmode=='mha':
             self.sub_criterion = Loss.mha_loss()
         else:
-            raise ValueError
+            self.sub_criterion = None
         
         # distill optimizer
         self.bestacc = 0
@@ -67,7 +70,7 @@ class FedMAD:
         
         # import ipdb; ipdb.set_trace()
         #path to save ckpt
-        self.rootdir = f'./checkpoints/{args.dataset}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}+l{self.args.lossmode}'
+        self.rootdir = f'./checkpoints/{args.dataset}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}+l{self.args.lossmode}+sl{self.args.sublossmode}'
         if not os.path.isdir(self.rootdir):
             os.makedirs(self.rootdir)
         if initpth:
@@ -91,7 +94,8 @@ class FedMAD:
             init_dir = self.rootdir
         if initpth:
             for n in range(self.N_parties):
-                savename = os.path.join(init_dir, str(n)+'.pt')
+                # savename = os.path.join(init_dir, str(n)+'.pt')
+                savename = os.path.join(init_dir, f'model-{n}.pth')
                 if os.path.exists(savename):
                     #self.localmodels[n].load_state_dict(self.best_statdict, strict=True)
                     logging.info(f'Loading Local{n}......')
@@ -120,7 +124,7 @@ class FedMAD:
             tmodel = copy.deepcopy(self.localmodels[n])
             gradcam = tmodel.module.get_class_activation_map(images, y=None)
             total_gradcam.append(gradcam)
-            del tmodel
+            # del tmodel
         return total_gradcam
 
     def getTotalMultiHeadAttentionMap(self, model, images, selectN, usecentral=True):
@@ -129,7 +133,7 @@ class FedMAD:
             tmodel = copy.deepcopy(self.localmodels[n])
             mha, th_attn = tmodel.module.get_attention_maps_postprocessing(images)
             total_mha.append(mha) # batch * nhead * 224 * 224
-            del tmodel
+            # del tmodel
         return total_mha # n_client * batch * nhead * 224 * 224
 
     def getEnsemble_logits(self, model, images, selectN, localweight, usecentral=True):
@@ -143,7 +147,7 @@ class FedMAD:
                 tmodel = copy.deepcopy(self.localmodels[n])
                 logits = tmodel(images).detach()
                 total_logits.append(m(logits))
-                del tmodel
+                # del tmodel
             total_logits = torch.stack(total_logits)
             if self.voteout:
                 ensemble_logits = Loss.weight_psedolabel(total_logits, self.countN[selectN], noweight=True).detach()
@@ -166,7 +170,7 @@ class FedMAD:
         model.train()
         m = torch.nn.Sigmoid()
         output = model(images)
-        loss = self.criterion(m(output), ensemble_logits)
+        logit_loss = self.criterion(m(output), ensemble_logits)
 
         if self.args.sublossmode=='at':
             gradcam = model.module.get_class_activation_map(images, y=None)
@@ -176,13 +180,13 @@ class FedMAD:
             sub_loss = self.sub_criterion(union, intersection, mha)
         else : 
             sub_loss = torch.tensor(0.0).cuda()
-        print('loss', loss, 'sub_loss', sub_loss, 'total_loss', loss+sub_loss)
-        loss = loss + sub_loss
+        print('loss', logit_loss, 'sub_loss', sub_loss, 'total_loss', logit_loss+sub_loss)
+        loss = logit_loss + sub_loss
         
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        return loss, sub_loss
+        return logit_loss, sub_loss
 
     def distill_local_central(self):
         args = self.args
@@ -191,7 +195,7 @@ class FedMAD:
                 self.central.parameters(), lr=self.args.dis_lr, momentum=args.momentum, weight_decay=args.wdecay)
         else:    
             optimizer = optim.Adam(
-                self.central.parameters(), lr=self.args.dis_lr,  betas=(args.momentum, 0.999), weight_decay=args.wdecay)
+                self.central.parameters(), lr=self.args.dis_lr, momentum=args.momentum, weight_decay=args.wdecay)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, float(args.fedrounds), eta_min=args.dis_lrmin,)
         
@@ -376,7 +380,6 @@ class FedMAD:
         acc = self.validate_model(model)
         logging.info(f'R{roundd}, L{modelid}, ========Init{(initacc):.2f}====Final{(lastacc):.2f}====Best{(earlyStop.bestacc):.2f}')
         self.localsteps[modelid] = globalstep
-
     
     def validate_model(self, model):
         model.eval()
@@ -384,6 +387,16 @@ class FedMAD:
         m = torch.nn.Sigmoid()
         output_list = []
         target_list = []
+        def isSameDict(d1, d2):
+            for k in d1:
+                if k not in d2:
+                    return False
+                if not torch.equal(d1[k], d2[k]):
+                    return False
+            return True
+        if isSameDict(model.state_dict(), self.prev_model_state_dist):
+            return self.prev_acc
+        
         with torch.no_grad():
             for i, (images, target, _) in enumerate(self.val_loader):
                 images = images.cuda()
@@ -397,6 +410,8 @@ class FedMAD:
         output = np.concatenate(output_list, axis=0)
         target = np.concatenate(target_list, axis=0)
         acc, = utils.accuracy(output, target)
+        self.prev_acc = acc
+        self.prev_model_state_dist = copy.deepcopy(model.state_dict())
         return acc
 
     def validateLocalTeacher(self, selectN, localweight):   
@@ -432,10 +447,8 @@ class FedMAD:
         datasize = len(tr_dataset)
         # criterion = nn.CrossEntropyLoss() #include softmax
         # multi label
-        criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
-        optimizer = optim.SGD(model.parameters(), args.lr,
-                                    momentum=0.9,
-                                    weight_decay=3e-4)
+        criterion = torch.nn.MultiLabelSoftMarginLoss(reduction='mean') # torch.nn.BCEWithLogitsLoss(reduction='mean')
+        optimizer = optim.SGD(model.parameters(), args.lr, momentum=0.9, weight_decay=3e-4)
         m = torch.nn.Sigmoid()
 
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -505,7 +518,7 @@ class FedMAD:
                 tmodel = copy.deepcopy(self.localmodels[n])
                 logits = tmodel(images).detach()
                 batch_logits.append(m(logits))
-                del tmodel
+                # del tmodel
             batch_logits = torch.stack(batch_logits).cpu()#(nl, nb, ncls)
             total_logits.append(batch_logits)
         self.total_logits = torch.cat(total_logits,dim=1).permute(1,0,2) #(nsample, nl, ncls)
@@ -547,8 +560,8 @@ class FedMAD:
             optimizer = optim.SGD(
                 self.central.parameters(), lr=self.args.dis_lr, momentum=args.momentum, weight_decay=args.wdecay)
         else:    
-            optimizer = optim.Adam(
-                self.central.parameters(), lr=self.args.dis_lr,  betas=(args.momentum, 0.999), weight_decay=args.wdecay)
+            optimizer = optim.Adam( 
+                self.central.parameters(), lr=self.args.dis_lr, weight_decay=args.wdecay)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, float(args.fedrounds), eta_min=args.dis_lrmin,)
         

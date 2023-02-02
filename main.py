@@ -63,7 +63,7 @@ if __name__ == "__main__":
     gpu = [int(i) for i in range(torch.cuda.device_count())]
     logging.info(f'GPU: {args.gpu}')
     # model = resnet8(num_classes=args.N_class).cuda()
-    model = mymodels.define_model(modelname=args.model_name, num_classes=args.N_class)
+    model = mymodels.define_model(modelname=args.model_name, num_classes=args.N_class, pretrained=args.pretrained)
 
     logging.info("totally {} paramerters".format(np.sum(x.numel() for x in model.parameters())))
     logging.info("Param size {}".format(np.sum([np.prod(x.size()) for name,x in model.named_parameters() if 'linear2' not in name])))
