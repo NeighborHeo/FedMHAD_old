@@ -16,20 +16,35 @@ class mha_loss(torch.nn.Module):
         # self.singlelabel = singlelabel
         # self.criterion= torch.nn.KLDivLoss(reduction='batchmean')
 
+
     def forward(self, inter_input, union_input, target):
         # inter_input : ensembled gradcam image (intersection)
         # union_input : ensembled gradcam image (union)
         # target : central gradcam image
-        p1, b1 = 10, 0.6
-        p2, b2 = 10, 0.3
         target = torch.tensor(target)
-        t_A = torch.sigmoid(-p1*(target-b1))
-        # Weighted Average sum
-        loss1 = -torch.sum(torch.dot(t_A.view(-1), inter_input.view(-1)))/torch.sum(t_A)
-        t_U = torch.sigmoid(-p2*(union_input-b2))
-        loss2 = -torch.sum(torch.dot(t_U.view(-1), target.view(-1)))/torch.sum(target)
+        similarity = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+        loss1 = 1-similarity(inter_input, target).mean()
+        loss2 = 1-similarity(union_input, target).mean()
+        # print('intersection loss : ', loss1.shape, 'union loss : ', loss2.shape)
         print('intersection loss : ', loss1, 'union loss : ', loss2)
         return loss1 + loss2
+
+
+    # def forward(self, inter_input, union_input, target):
+    #     # inter_input : ensembled gradcam image (intersection)
+    #     # union_input : ensembled gradcam image (union)
+    #     # target : central gradcam image
+    #     p1, b1 = 10, 0.6
+    #     p2, b2 = 10, 0.3
+    #     target = torch.tensor(target)
+    #     t_A = torch.sigmoid(-p1*(target-b1))
+    #     # Weighted Average sum
+    #     print('inter_input : ', inter_input.shape, 'target : ', target.shape)
+    #     loss1 = -torch.sum(torch.dot(t_A.view(-1), inter_input.view(-1)))/torch.sum(t_A)
+    #     t_U = torch.sigmoid(-p2*(union_input-b2))
+    #     loss2 = -torch.sum(torch.dot(t_U.view(-1), target.view(-1)))/torch.sum(target)
+    #     print('intersection loss : ', loss1, 'union loss : ', loss2)
+    #     return loss1 + loss2
 
 
 def weight_multihead_attention_map(mha_images, countN):#nlcoal*batch*nclass
@@ -37,7 +52,9 @@ def weight_multihead_attention_map(mha_images, countN):#nlcoal*batch*nclass
     # union is maximum of all clients 
     # union = batch size * n_head * image width * image height
     union = torch.max(torch.tensor(mha_images), dim=0)[0]
+
     # intersection is minimum of all clients 
     # intersection = batch size * n_head * image width * image height
     intersection = torch.min(torch.tensor(mha_images), dim=0)[0]
+    print('mha_images : ', torch.tensor(mha_images).shape, 'union : ', union.shape, 'intersection : ', intersection.shape)
     return union, intersection

@@ -100,12 +100,17 @@ def dirichlet_datasplit(args, privtype='cifar10', publictype='cifar100', N_parti
         )
     elif publictype== 'mscoco':
         import pathlib
-        path = pathlib.Path(args.datapath).joinpath('PASCAL_VOC_2012')
-        public_imgs = np.load(path.joinpath('PASCAL_VOC_val_224_Img.npy'))
-        public_labels = np.load(path.joinpath('PASCAL_VOC_val_224_Label.npy'))
-        # print("size of public dataset: ", public_imgs.shape, "images")
+        path = pathlib.Path(args.datapath).joinpath('MSCOCO')
+        public_imgs = np.load(path.joinpath('coco_img.npy'))
+        public_labels = np.load(path.joinpath('coco_label.npy'))
+        print("size of public dataset: ", public_imgs.shape, "images")
         public_dataset = mydataset(public_imgs, public_labels) # transforms=transformations_valid)
-        test_dataset = mydataset(public_imgs.copy(), public_labels.copy()) # transforms=transformations_valid)
+        
+        path = pathlib.Path(args.datapath).joinpath('PASCAL_VOC_2012')
+        test_imgs = np.load(path.joinpath('PASCAL_VOC_val_224_Img.npy'))
+        test_labels = np.load(path.joinpath('PASCAL_VOC_val_224_Label.npy'))
+        print("size of test dataset: ", test_imgs.shape, "images")
+        test_dataset = mydataset(test_imgs, test_labels) # transforms=transformations_valid)
         
 
     distill_loader = DataLoader(
