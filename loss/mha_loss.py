@@ -16,18 +16,31 @@ class mha_loss(torch.nn.Module):
         # self.singlelabel = singlelabel
         # self.criterion= torch.nn.KLDivLoss(reduction='batchmean')
 
+    # def forward(self, inter_input, union_input, target):
+    #     # inter_input : ensembled gradcam image (intersection)
+    #     # union_input : ensembled gradcam image (union)
+    #     # target : central gradcam image
+    #     similarity = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+    #     loss1 = 1-similarity(inter_input, target).mean()
+    #     loss2 = 1-similarity(union_input, target).mean()
+    #     # print('intersection loss : ', loss1.shape, 'union loss : ', loss2.shape)
+    #     print('intersection loss : ', loss1, 'union loss : ', loss2)
+    #     return loss1 + loss2
 
-    def forward(self, inter_input, union_input, target):
+    def forward(self, mha_images, target, weights=None):
         # inter_input : ensembled gradcam image (intersection)
         # union_input : ensembled gradcam image (union)
         # target : central gradcam image
-        target = torch.tensor(target)
         similarity = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
-        loss1 = 1-similarity(inter_input, target).mean()
-        loss2 = 1-similarity(union_input, target).mean()
-        # print('intersection loss : ', loss1.shape, 'union loss : ', loss2.shape)
-        print('intersection loss : ', loss1, 'union loss : ', loss2)
-        return loss1 + loss2
+        losses = []
+        for i in range(mha_images.shape[0]):
+            loss = 1-similarity(mha_images[i], target).mean()
+            losses.append(loss)
+        # if weights is not None:
+        #     weighted_loss = torch.mean(torch.stack(losses) * weights)
+        # else:
+        weighted_loss = torch.mean(torch.stack(losses))
+        return weighted_loss
 
 
     # def forward(self, inter_input, union_input, target):
@@ -51,10 +64,10 @@ def weight_multihead_attention_map(mha_images, countN):#nlcoal*batch*nclass
     # mha_images = n_clinets * batch size * n_head * image width * image height
     # union is maximum of all clients 
     # union = batch size * n_head * image width * image height
-    union = torch.max(torch.tensor(mha_images), dim=0)[0]
+    union = torch.max(mha_images, dim=0)[0]
 
     # intersection is minimum of all clients 
     # intersection = batch size * n_head * image width * image height
-    intersection = torch.min(torch.tensor(mha_images), dim=0)[0]
-    print('mha_images : ', torch.tensor(mha_images).shape, 'union : ', union.shape, 'intersection : ', intersection.shape)
+    intersection = torch.min(mha_images, dim=0)[0]
+    print('mha_images : ', mha_images.shape, 'union : ', union.shape, 'intersection : ', intersection.shape)
     return union, intersection

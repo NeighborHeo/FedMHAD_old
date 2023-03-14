@@ -11,10 +11,11 @@ import copy
 import random
 import loss as Loss
 import mydataset
+from tqdm import tqdm
 
 class FedMAD:
     def __init__(self, central, distil_loader, private_data, val_loader, 
-                   writer, args, initpth=True, localmodel=None):
+                   writer, experiment, args, initpth=True, localmodel=None):
         # import ipdb; ipdb.set_trace()
         self.localmodel = localmodel
         self.central = central
@@ -24,7 +25,7 @@ class FedMAD:
         self.val_loader = val_loader
         self.writer = writer
         self.args = args
-        
+        self.experiment = experiment
         self.prevacc = 0
         self.prev_model_state_dist = {}
         
@@ -101,7 +102,8 @@ class FedMAD:
                     logging.info(f'Loading Local{n}......')
                     print('filepath : ', savename)
                     utils.load_dict(savename, self.localmodels[n])
-                    acc = self.validate_model(self.localmodels[n])
+                    # acc = self.validate_model(self.localmodels[n])
+                    acc = 0.0
                 else:
                     logging.info(f'Init Local{n}, Epoch={epochs}......')
                     acc = self.trainLocal(savename, modelid=n)
@@ -124,16 +126,17 @@ class FedMAD:
             tmodel = copy.deepcopy(self.localmodels[n])
             gradcam = tmodel.module.get_class_activation_map(images, y=None)
             total_gradcam.append(gradcam)
-            # del tmodel
+            del tmodel
         return total_gradcam
 
     def getTotalMultiHeadAttentionMap(self, model, images, selectN, usecentral=True):
         total_mha = [] 
         for n in selectN:
             tmodel = copy.deepcopy(self.localmodels[n])
-            mha, th_attn = tmodel.module.get_attention_maps_postprocessing(images)
+            mha = tmodel.module.get_attention_maps_postprocessing(images)
             total_mha.append(mha) # batch * nhead * 224 * 224
-            # del tmodel
+            del tmodel
+        total_mha = torch.stack(total_mha) # n_client * batch * nhead * 224 * 224
         return total_mha # n_client * batch * nhead * 224 * 224
 
     def getEnsemble_logits(self, model, images, selectN, localweight, usecentral=True):
@@ -147,7 +150,7 @@ class FedMAD:
                 tmodel = copy.deepcopy(self.localmodels[n])
                 logits = tmodel(images).detach()
                 total_logits.append(m(logits))
-                # del tmodel
+                del tmodel
             total_logits = torch.stack(total_logits)
             if self.voteout:
                 ensemble_logits = Loss.weight_psedolabel(total_logits, self.countN[selectN], noweight=True).detach()
@@ -165,7 +168,7 @@ class FedMAD:
             union, intersection = Loss.weight_gradcam(total_gradcam, self.countN)
         if self.args.sublossmode=='mha':
             total_mha = self.getTotalMultiHeadAttentionMap(model, images, selectN, usecentral=usecentral)
-            union, intersection = Loss.weight_multihead_attention_map(total_mha, self.countN)
+            # union, intersection = Loss.weight_multihead_attention_map(total_mha, self.countN)
 
         model.train()
         m = torch.nn.Sigmoid()
@@ -176,11 +179,11 @@ class FedMAD:
             gradcam = model.module.get_class_activation_map(images, y=None)
             sub_loss = self.sub_criterion(union, intersection, gradcam)
         elif self.args.sublossmode=='mha':
-            mha, th_attn = model.module.get_attention_maps_postprocessing(images)
-            sub_loss = self.sub_criterion(union, intersection, mha)
+            mha = model.module.get_attention_maps_postprocessing(images)
+            sub_loss = self.sub_criterion(total_mha, mha, self.countN[selectN])
         else : 
             sub_loss = torch.tensor(0.0).cuda()
-        print('loss', logit_loss, 'sub_loss', sub_loss, 'total_loss', logit_loss+sub_loss)
+        # print('loss', logit_loss, 'sub_loss', sub_loss, 'total_loss', logit_loss+sub_loss)
         loss = logit_loss + sub_loss
         
         optimizer.zero_grad()
@@ -192,12 +195,12 @@ class FedMAD:
         args = self.args
         if self.args.optim == 'SGD':
             optimizer = optim.SGD(
-                self.central.parameters(), lr=self.args.dis_lr, momentum=args.momentum, weight_decay=args.wdecay)
+                self.central.parameters(), lr=self.args.dis_lr, momentum=self.args.momentum, weight_decay=self.args.wdecay)
         else:    
             optimizer = optim.Adam(
-                self.central.parameters(), lr=self.args.dis_lr, momentum=args.momentum, weight_decay=args.wdecay)
+                self.central.parameters(), lr=self.args.dis_lr, betas=(self.args.momentum, 0.999), weight_decay=args.wdecay)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, float(args.fedrounds), eta_min=args.dis_lrmin,)
+                optimizer, float(args.fedrounds), eta_min=self.args.dis_lrmin,)
         
         savename = os.path.join(self.savedir, f'q{args.quantify}_n{args.noisescale}_{args.optim}_b{args.disbatchsize}_{args.dis_lr}_{args.fedrounds}_{args.dis_lrmin}_m{args.momentum}')
         bestacc = self.bestacc
@@ -212,10 +215,11 @@ class FedMAD:
             localweight = localweight.unsqueeze(dim=1).unsqueeze(dim=2)#nlocal*1*1
         
         step = 0
+        acc = 0.0
         for epoch in range(0, args.fedrounds):
-            loss_list = []
-            subloss_list = []
-            for i, (images, _, _) in enumerate(self.distil_loader):
+            loss_avg = 0.0
+            sub_loss_avg = 0.0
+            for i, (images, _, _) in tqdm(enumerate(self.distil_loader)):
                 images = images.cuda()
                 countN = self.countN
                 if self.args.C<1:
@@ -231,18 +235,26 @@ class FedMAD:
                         localweight = localweight.unsqueeze(dim=1).unsqueeze(dim=2)#nlocal*1*1
                 
                 loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, localweight, optimizer, usecentral=False) 
-                loss_list.append(loss.item())
-                subloss_list.append(subloss.item())
+                loss_avg += loss.item()
+                sub_loss_avg += subloss.item()
                 step += 1
             
-            loss = np.mean(loss_list)
-            subloss = np.mean(subloss_list)
-            acc = self.validate_model(self.central)
+            loss_avg /= len(self.distil_loader)
+            sub_loss_avg /= len(self.distil_loader)
             
+            if epoch%1==0:
+                last_acc = self.validate_model(self.central)
+                acc = last_acc
+                 
             if self.writer is not None:
                 self.writer.add_scalar('loss', loss, epoch, display_name='loss')
                 self.writer.add_scalar('at_loss', subloss, epoch, display_name='at_loss')
                 self.writer.add_scalar('DisACC', acc, epoch, display_name='DisACC')
+            if self.experiment is not None:
+                self.experiment.log_metric('lg_loss', loss_avg, step=epoch)
+                self.experiment.log_metric('at_loss', sub_loss_avg, step=epoch)
+                self.experiment.log_metric('DisACC', acc, step=epoch)
+                
             if acc>bestacc:
                 if bestname:
                     os.system(f'rm {bestname}')
@@ -253,141 +265,145 @@ class FedMAD:
             scheduler.step()
             logging.info(f'Epoch{epoch}, Acc{(acc):.2f}')
       
-    def distill_local_central_joint(self):
-        if self.args.initcentral:
-            self.init_central()
-            usecentral = True
-        else:
-            usecentral = False
-        if self.args.C==1:
-            selectN = self.locallist
-            countN = self.countN
-            localweight = countN/countN.sum(dim=0)
-            localweight = localweight.unsqueeze(dim=1)
-        #optimizer
-        self.totalSteps = int(self.args.steps_round*128/(self.args.disbatchsize))
-        self.earlystopSteps = int(self.totalSteps/5)
-        self.max_epochs_round = 1+int(self.totalSteps/len(self.distil_loader))
+    # def distill_local_central_joint(self):
+    #     if self.args.initcentral:
+    #         self.init_central()
+    #         usecentral = True
+    #     else:
+    #         usecentral = False
+    #     if self.args.C==1:
+    #         selectN = self.locallist
+    #         countN = self.countN
+    #         localweight = countN/countN.sum(dim=0)
+    #         localweight = localweight.unsqueeze(dim=1)
+    #     #optimizer
+    #     self.totalSteps = int(self.args.steps_round*128/(self.args.disbatchsize))
+    #     self.earlystopSteps = int(self.totalSteps/5)
+    #     self.max_epochs_round = 1+int(self.totalSteps/len(self.distil_loader))
 
-        self.localsteps = np.zeros(self.N_parties)
-        local_optimizers = []
-        local_schedulers = []
-        for n in range(self.N_parties):
-            if self.args.optim == 'SGD':
-                optimizer = optim.SGD(
-                    self.localmodels[n].parameters(), lr=self.args.dis_lr, momentum=self.args.momentum,  weight_decay=self.args.wdecay)
-            else:    
-                optimizer = optim.Adam(
-                    self.localmodels[n].parameters(), lr=self.args.dis_lr,  betas=(self.args.momentum, 0.999), weight_decay=self.args.wdecay)
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, float(self.args.fedrounds), eta_min=self.args.dis_lrmin,)
-            local_optimizers.append(optimizer)
-            local_schedulers.append(scheduler)
+    #     self.localsteps = np.zeros(self.N_parties)
+    #     local_optimizers = []
+    #     local_schedulers = []
+    #     for n in range(self.N_parties):
+    #         if self.args.optim == 'SGD':
+    #             optimizer = optim.SGD(
+    #                 self.localmodels[n].parameters(), lr=self.args.dis_lr, momentum=self.args.momentum,  weight_decay=self.args.wdecay)
+    #         else:    
+    #             optimizer = optim.Adam(
+    #                 self.localmodels[n].parameters(), lr=self.args.dis_lr, betas=(self.args.momentum, 0.999), weight_decay=self.args.wdecay)
+    #         scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    #             optimizer, float(self.args.fedrounds), eta_min=self.args.dis_lrmin,)
+    #         local_optimizers.append(optimizer)
+    #         local_schedulers.append(scheduler)
 
-        for roundd in range(1, 1+self.args.fedrounds):
-            if self.args.C<1:    
-                selectN = random.sample(self.locallist, int(self.args.C*self.N_parties))
-                countN = self.countN[selectN]
-                localweight = countN/countN.sum(dim=0)
-                localweight = localweight.unsqueeze(dim=1)
-            acc = self.validateLocalTeacher(selectN, localweight)
-            logging.info(f'*****************Round{roundd},LocalAVG:{(acc):.2f}***********************')
-            self.updateLocals(local_optimizers, roundd, selectN, localweight, usecentral=usecentral)
-            # import ipdb; ipdb.set_trace()
-            for n in selectN:
-                local_schedulers[n].step()
-            acc = self.validateLocalTeacher(selectN, localweight)
-            logging.info(f'*****************Round{roundd},LocalAVG:{(acc):.2f}***********************')
-            self.updateCentral(roundd, selectN, localweight)
+    #     for roundd in range(1, 1+self.args.fedrounds):
+    #         if self.args.C<1:    
+    #             selectN = random.sample(self.locallist, int(self.args.C*self.N_parties))
+    #             countN = self.countN[selectN]
+    #             localweight = countN/countN.sum(dim=0)
+    #             localweight = localweight.unsqueeze(dim=1)
+    #         acc = self.validateLocalTeacher(selectN, localweight)
+    #         logging.info(f'*****************Round{roundd},LocalAVG:{(acc):.2f}***********************')
+    #         self.updateLocals(local_optimizers, roundd, selectN, localweight, usecentral=usecentral)
+    #         # import ipdb; ipdb.set_trace()
+    #         for n in selectN:
+    #             local_schedulers[n].step()
+    #         acc = self.validateLocalTeacher(selectN, localweight)
+    #         logging.info(f'*****************Round{roundd},LocalAVG:{(acc):.2f}***********************')
+    #         self.updateCentral(roundd, selectN, localweight)
             
-    def updateLocals(self, optimizers, roundd, selectN, selectweight, usecentral=False): #only update for the selected
-        for n in selectN:
-            logging.info(f'---------------------Local-{n}------------------------')
-            self.distill_onelocal(roundd, n, optimizers[n],  selectN, selectweight, usecentral=usecentral, writer=self.writer)
+    # def updateLocals(self, optimizers, roundd, selectN, selectweight, usecentral=False): #only update for the selected
+    #     for n in selectN:
+    #         logging.info(f'---------------------Local-{n}------------------------')
+    #         self.distill_onelocal(roundd, n, optimizers[n],  selectN, selectweight, usecentral=usecentral)
             
-    def updateCentral(self, roundd, selectN, selectweight):
-        #
-        step = 0
-        args = self.args
-        earlyStop = utils.EarlyStop(self.earlystopSteps, self.totalSteps, bestacc=self.bestacc)
-        self.best_statdict = copy.deepcopy(self.central.state_dict())
+    # def updateCentral(self, roundd, selectN, selectweight):
+    #     #
+    #     step = 0
+    #     args = self.args
+    #     earlyStop = utils.EarlyStop(self.earlystopSteps, self.totalSteps, bestacc=self.bestacc)
+    #     self.best_statdict = copy.deepcopy(self.central.state_dict())
         
-        if self.args.optim == 'SGD':
-            optimizer = optim.SGD(
-                self.central.parameters(), lr=self.args.dis_lr, momentum=self.args.momentum, weight_decay=args.wdecay)
-        else:    
-            optimizer = optim.Adam(
-                self.central.parameters(), lr=self.args.dis_lr,  betas=(self.args.momentum, 0.99), weight_decay=args.wdecay)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, float(self.totalSteps), eta_min=args.dis_lrmin,)
+    #     if self.args.optim == 'SGD':
+    #         optimizer = optim.SGD(
+    #             self.central.parameters(), lr=self.args.dis_lr, momentum=self.args.momentum, weight_decay=self.args.wdecay)
+    #     else:    
+    #         optimizer = optim.Adam(
+    #             self.central.parameters(), lr=self.args.dis_lr, betas=(self.args.momentum, 0.999), weight_decay=self.args.wdecay)
+    #     scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    #             optimizer, float(self.totalSteps), eta_min=self.args.dis_lrmin,)
 
-        for epoch in range(self.max_epochs_round):
-            for i, (images, _, _) in enumerate(self.distil_loader):
-                images = images.cuda()
-                loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, selectweight, optimizer, usecentral=False)
-                acc = self.validate_model(self.central)
-                step += 1
-                stop, best = earlyStop.update(step, acc)
-                if best:
-                    logging.info(f'Iter{step}, best for now:{acc}')
-                    self.best_statdict = copy.deepcopy(self.central.state_dict())
-                if stop:
-                    break
-                else:
-                    logging.info(f'===R{roundd}, Epoch:{epoch}/{self.max_epochs_round}, acc{acc}, best{earlyStop.bestacc}')
-                    scheduler.step()
-                    continue
-            break
-        #
-        self.central.load_state_dict(self.best_statdict, strict=True)
-        savename = os.path.join(self.savedir, f'r{roundd}_{(earlyStop.bestacc):.2f}.pt')
-        torch.save(self.best_statdict, savename)
-        logging.info(f'==================Round{roundd},Init{(self.bestacc):.2f}, Acc{(earlyStop.bestacc):.2f}====================')
-        self.bestacc = earlyStop.bestacc
-        if self.writer is not None:
-            self.writer.add_scalar('DisACC', self.bestacc, roundd) 
+    #     for epoch in range(self.max_epochs_round):
+    #         for i, (images, _, _) in enumerate(self.distil_loader):
+    #             images = images.cuda()
+    #             loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, selectweight, optimizer, usecentral=False)
+    #             acc = self.validate_model(self.central)
+    #             step += 1
+    #             stop, best = earlyStop.update(step, acc)
+    #             if best:
+    #                 logging.info(f'Iter{step}, best for now:{acc}')
+    #                 self.best_statdict = copy.deepcopy(self.central.state_dict())
+    #             if stop:
+    #                 break
+    #             else:
+    #                 logging.info(f'===R{roundd}, Epoch:{epoch}/{self.max_epochs_round}, acc{acc}, best{earlyStop.bestacc}')
+    #                 scheduler.step()
+    #                 continue
+    #         break
+    #     #
+    #     self.central.load_state_dict(self.best_statdict, strict=True)
+    #     savename = os.path.join(self.savedir, f'r{roundd}_{(earlyStop.bestacc):.2f}.pt')
+    #     torch.save(self.best_statdict, savename)
+    #     logging.info(f'==================Round{roundd},Init{(self.bestacc):.2f}, Acc{(earlyStop.bestacc):.2f}====================')
+    #     self.bestacc = earlyStop.bestacc
+    #     if self.writer is not None:
+    #         self.writer.add_scalar('DisACC', self.bestacc, roundd) 
+    #     if self.experiment is not None:
+    #         self.experiment.log_metric('DisACC', self.bestacc, step=roundd)
     
-    def distill_onelocal(self, roundd, modelid, optimizer, selectN, localweight, usecentral = False, writer=None):
-        model = self.localmodels[modelid]
-        initacc = self.validate_model(model)
-        bestdict = copy.deepcopy(model.state_dict())
-        earlyStop = utils.EarlyStop(self.earlystopSteps, self.totalSteps, bestacc=initacc)
-        #
-        savename = os.path.join(self.savedir, f'Local{modelid}_r{roundd}')
-        writermark = f'Local{modelid}'
-        step = 0
-        globalstep = self.localsteps[modelid]
-        bestname = ''
-        for epoch in range(0, self.max_epochs_round):
-            for i, (images, _, _) in enumerate(self.distil_loader):
-                images = images.cuda()
-                loss, subloss = self.distill_onemodel_batch(model, images, selectN, localweight, optimizer, usecentral=usecentral)
-                step += 1
-                globalstep += 1
-                acc = self.validate_model(model)
-                if writer is not None:
-                    writer.add_scalar(writermark, acc, globalstep)
-                stop, best = earlyStop.update(step, acc)
-                if best:
-                    if bestname:
-                        os.system(f'rm {bestname}')
-                    bestacc = acc
-                    bestdict = copy.deepcopy(model.state_dict())
-                    bestname = f'{savename}_i{int(globalstep):d}_{(bestacc):.2f}.pt'
-                    torch.save(model.state_dict(), bestname)
-                    logging.info(f'========Best...Iter{globalstep},Epoch{epoch}, Acc{(acc):.2f}')
-                if stop:
-                    break
-            else:
-                logging.info(f'Epoch:{epoch}/{self.max_epochs_round}, acc{acc}, best{earlyStop.bestacc}')
-                #scheduler.step()
-                continue
-            break
-        lastacc = self.validate_model(model)        
-        model.load_state_dict(bestdict, strict=True)
-        acc = self.validate_model(model)
-        logging.info(f'R{roundd}, L{modelid}, ========Init{(initacc):.2f}====Final{(lastacc):.2f}====Best{(earlyStop.bestacc):.2f}')
-        self.localsteps[modelid] = globalstep
+    # def distill_onelocal(self, roundd, modelid, optimizer, selectN, localweight, usecentral = False):
+    #     model = self.localmodels[modelid]
+    #     initacc = self.validate_model(model)
+    #     bestdict = copy.deepcopy(model.state_dict())
+    #     earlyStop = utils.EarlyStop(self.earlystopSteps, self.totalSteps, bestacc=initacc)
+    #     #
+    #     savename = os.path.join(self.savedir, f'Local{modelid}_r{roundd}')
+    #     writermark = f'Local{modelid}'
+    #     step = 0
+    #     globalstep = self.localsteps[modelid]
+    #     bestname = ''
+    #     for epoch in range(0, self.max_epochs_round):
+    #         for i, (images, _, _) in enumerate(self.distil_loader):
+    #             images = images.cuda()
+    #             loss, subloss = self.distill_onemodel_batch(model, images, selectN, localweight, optimizer, usecentral=usecentral)
+    #             step += 1
+    #             globalstep += 1
+    #             acc = self.validate_model(model)
+    #             if self.writer is not None:
+    #                 self.writer.add_scalar(writermark, acc, globalstep)
+    #             if self.experiment is not None:
+    #                 self.experiment.log_metric(writermark, acc, step=globalstep)
+    #             stop, best = earlyStop.update(step, acc)
+    #             if best:
+    #                 if bestname:
+    #                     os.system(f'rm {bestname}')
+    #                 bestacc = acc
+    #                 bestdict = copy.deepcopy(model.state_dict())
+    #                 bestname = f'{savename}_i{int(globalstep):d}_{(bestacc):.2f}.pt'
+    #                 torch.save(model.state_dict(), bestname)
+    #                 logging.info(f'========Best...Iter{globalstep},Epoch{epoch}, Acc{(acc):.2f}')
+    #             if stop:
+    #                 break
+    #         else:
+    #             logging.info(f'Epoch:{epoch}/{self.max_epochs_round}, acc{acc}, best{earlyStop.bestacc}')
+    #             #scheduler.step()
+    #             continue
+    #         break
+    #     lastacc = self.validate_model(model)        
+    #     model.load_state_dict(bestdict, strict=True)
+    #     acc = self.validate_model(model)
+    #     logging.info(f'R{roundd}, L{modelid}, ========Init{(initacc):.2f}====Final{(lastacc):.2f}====Best{(earlyStop.bestacc):.2f}')
+    #     self.localsteps[modelid] = globalstep
     
     def validate_model(self, model):
         model.eval()
@@ -422,24 +438,24 @@ class FedMAD:
         self.prev_model_state_dist = copy.deepcopy(model.state_dict())
         return acc
 
-    def validateLocalTeacher(self, selectN, localweight):   
-        testacc = utils.AverageMeter()
-        with torch.no_grad():
-            for i, (images, target, _) in enumerate(self.val_loader):
-                logits = []
-                images = images.cuda()
-                target = target.cuda()
-                for n in selectN:
-                    output = self.localmodels[n](images).detach()
-                    logits.append(output)
-                logits = torch.stack(logits)
-                if self.voteout:
-                    ensemble_logits = Loss.weight_psedolabel(logits, self.countN[selectN], noweight=True)
-                else:
-                    ensemble_logits = (logits*localweight).sum(dim=0)
-                acc, = utils.accuracy(ensemble_logits, target)
-                testacc.update(acc)
-        return testacc.avg
+    # def validateLocalTeacher(self, selectN, localweight):   
+    #     testacc = utils.AverageMeter()
+    #     with torch.no_grad():
+    #         for i, (images, target, _) in enumerate(self.val_loader):
+    #             logits = []
+    #             images = images.cuda()
+    #             target = target.cuda()
+    #             for n in selectN:
+    #                 output = self.localmodels[n](images).detach()
+    #                 logits.append(output)
+    #             logits = torch.stack(logits)
+    #             if self.voteout:
+    #                 ensemble_logits = Loss.weight_psedolabel(logits, self.countN[selectN], noweight=True)
+    #             else:
+    #                 ensemble_logits = (logits*localweight).sum(dim=0)
+    #             acc, = utils.accuracy(ensemble_logits, target)
+    #             testacc.update(acc)
+    #     return testacc.avg
     
     def trainLocal(self, savename, modelid=0):
         epochs = self.args.initepochs
@@ -460,7 +476,7 @@ class FedMAD:
         m = torch.nn.Sigmoid()
 
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, float(epochs), eta_min=args.lrmin,)
+                optimizer, float(epochs), eta_min=self.args.lrmin,)
         #
         bestacc = 0 
         bestname = ''
@@ -476,7 +492,7 @@ class FedMAD:
                 output = model(images)
                 # import ipdb; ipdb.set_trace()
                 loss = criterion(m(output), target)
-                acc,  = utils.accuracy(m(output), target)
+                acc,  = utils.accuracy(m(output).detach().cpu().numpy(), target.detach().cpu().numpy())
                 tracc.update(acc)
                 trloss.update(loss.item())
                 optimizer.zero_grad()
@@ -495,7 +511,7 @@ class FedMAD:
                     images = images.cuda()
                     target = target.cuda()
                     output = model(images)
-                    acc, = utils.accuracy(m(output), target)
+                    acc, = utils.accuracy(m(output).detach().cpu().numpy(), target.detach().cpu().numpy())
                     testacc.update(acc)
                 if writer is not None:
                     writer.add_scalar(str(modelid)+'testacc', testacc.avg, epoch, display_name=str(modelid)+'testacc')
@@ -512,107 +528,111 @@ class FedMAD:
 
         return bestacc
        
-    def update_distill_loader_wlocals(self, public_dataset):
-        """
-        save local prediction for one-shot distillation
-        """
-        total_logits = []
-        m = torch.nn.Sigmoid()
-        for i, (images, _, idx) in enumerate(self.distil_loader):
-            # import ipdb; ipdb.set_trace()
-            images = images.cuda()
-            batch_logits = []
-            for n in self.locallist:
-                tmodel = copy.deepcopy(self.localmodels[n])
-                logits = tmodel(images).detach()
-                batch_logits.append(m(logits))
-                # del tmodel
-            batch_logits = torch.stack(batch_logits).cpu()#(nl, nb, ncls)
-            total_logits.append(batch_logits)
-        self.total_logits = torch.cat(total_logits,dim=1).permute(1,0,2) #(nsample, nl, ncls)
-        if self.args.dataset=='cifar10':
-            assert public_dataset.aug == False
-            public_dataset.aug = True
-        if self.args.dataset=='pascal_voc2012':
-            assert public_dataset.aug == False
-            public_dataset.aug = True
+    # def update_distill_loader_wlocals(self, public_dataset):
+    #     """
+    #     save local prediction for one-shot distillation
+    #     """
+    #     total_logits = []
+    #     m = torch.nn.Sigmoid()
+    #     for i, (images, _, idx) in enumerate(self.distil_loader):
+    #         # import ipdb; ipdb.set_trace()
+    #         images = images.cuda()
+    #         batch_logits = []
+    #         for n in self.locallist:
+    #             tmodel = copy.deepcopy(self.localmodels[n])
+    #             logits = tmodel(images).detach()
+    #             batch_logits.append(m(logits))
+    #             del tmodel
+    #         batch_logits = torch.stack(batch_logits).cpu()#(nl, nb, ncls)
+    #         total_logits.append(batch_logits)
+    #     self.total_logits = torch.cat(total_logits,dim=1).permute(1,0,2) #(nsample, nl, ncls)
+    #     if self.args.dataset=='cifar10':
+    #         assert public_dataset.aug == False
+    #         public_dataset.aug = True
+    #     if self.args.dataset=='pascal_voc2012':
+    #         assert public_dataset.aug == False
+    #         public_dataset.aug = True
         
-        self.distil_loader = DataLoader(
-            dataset=public_dataset, batch_size=self.args.disbatchsize, shuffle=True, 
-            num_workers=self.args.num_workers, pin_memory=True, sampler=None)
+    #     self.distil_loader = DataLoader(
+    #         dataset=public_dataset, batch_size=self.args.disbatchsize, shuffle=True, 
+    #         num_workers=self.args.num_workers, pin_memory=True, sampler=None)
 
-    def distill_batch_oneshot(self, model, images, idx, selectN, localweight, optimizer):
-        total_logits = self.total_logits[idx].permute(1,0,2) #nlocal*batch*ncls
-        total_logits = total_logits[torch.tensor(selectN)].to(images.device) #nlocal*batch*ncls
-        #if quantify
+    # def distill_batch_oneshot(self, model, images, idx, selectN, localweight, optimizer):
+    #     total_logits = self.total_logits[idx].permute(1,0,2) #nlocal*batch*ncls
+    #     total_logits = total_logits[torch.tensor(selectN)].to(images.device) #nlocal*batch*ncls
+    #     #if quantify
 
-        if self.voteout:
-            ensemble_logits, votemask = Loss.weight_psedolabel(total_logits, self.countN[selectN])
-        else:    
-            ensemble_logits = (total_logits*localweight).sum(dim=0) #batch*ncls
-        #if noise
+    #     if self.voteout:
+    #         ensemble_logits, votemask = Loss.weight_psedolabel(total_logits, self.countN[selectN])
+    #     else:    
+    #         ensemble_logits = (total_logits*localweight).sum(dim=0) #batch*ncls
+    #     #if noise
 
-        model.train()
-        central_logits = model(images)
-        m = torch.nn.Sigmoid()
-        loss = self.criterion(m(central_logits), ensemble_logits)
+    #     model.train()
+    #     central_logits = model(images)
+    #     m = torch.nn.Sigmoid()
+    #     loss = self.criterion(m(central_logits), ensemble_logits)
         
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        return loss
+    #     optimizer.zero_grad()
+    #     loss.backward()
+    #     optimizer.step()
+    #     return loss
         
-    def distill_local_central_oneshot(self):
-        args = self.args
-        if self.args.optim == 'SGD':
-            optimizer = optim.SGD(
-                self.central.parameters(), lr=self.args.dis_lr, momentum=args.momentum, weight_decay=args.wdecay)
-        else:    
-            optimizer = optim.Adam( 
-                self.central.parameters(), lr=self.args.dis_lr, weight_decay=args.wdecay)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, float(args.fedrounds), eta_min=args.dis_lrmin,)
+    # def distill_local_central_oneshot(self):
+    #     args = self.args
+    #     if self.args.optim == 'SGD':
+    #         optimizer = optim.SGD(
+    #             self.central.parameters(), lr=self.args.dis_lr, momentum=self.args.momentum, weight_decay=self.args.wdecay)
+    #     else:    
+    #         optimizer = optim.Adam(
+    #             self.central.parameters(), lr=self.args.dis_lr, betas=(self.args.momentum, 0.999), weight_decay=self.args.wdecay)
+    #     scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    #             optimizer, float(args.fedrounds), eta_min=self.args.dis_lrmin,)
         
-        savename = os.path.join(self.savedir, f'osp{args.public_percent}_q{args.quantify}_n{args.noisescale}_{args.optim}_b{args.disbatchsize}_{args.dis_lr}_{args.fedrounds}_{args.dis_lrmin}_m{args.momentum}')
-        bestacc = self.bestacc
-        bestname = ''
-        selectN = self.locallist
-        if self.clscnt:
-            countN = self.countN
-            localweight = countN/countN.sum(dim=0)
-            localweight = localweight.unsqueeze(dim=1)#nlocal*1*ncls
-        else:
-            localweight = 1.0*self.totalN/self.totalN.sum()
-            localweight = localweight.unsqueeze(dim=1).unsqueeze(dim=2)#nlocal*1*1
+    #     savename = os.path.join(self.savedir, f'osp{args.public_percent}_q{args.quantify}_n{args.noisescale}_{args.optim}_b{args.disbatchsize}_{args.dis_lr}_{args.fedrounds}_{args.dis_lrmin}_m{args.momentum}')
+    #     bestacc = self.bestacc
+    #     bestname = ''
+    #     selectN = self.locallist
+    #     if self.clscnt:
+    #         countN = self.countN
+    #         localweight = countN/countN.sum(dim=0)
+    #         localweight = localweight.unsqueeze(dim=1)#nlocal*1*ncls
+    #     else:
+    #         localweight = 1.0*self.totalN/self.totalN.sum()
+    #         localweight = localweight.unsqueeze(dim=1).unsqueeze(dim=2)#nlocal*1*1
         
-        step = 0
-        for epoch in range(0, args.fedrounds):
-            for i, (images, _, idx) in enumerate(self.distil_loader):
-                images = images.cuda()
-                countN = self.countN
-                if self.args.C<1:
-                    selectN = random.sample(self.locallist, int(args.C*self.N_parties))
-                    countN = self.countN[selectN]
-                    if self.clscnt:
-                        localweight = countN/countN.sum(dim=0)#nlocal*nclass
-                        localweight = localweight.unsqueeze(dim=1)#nlocal*1*ncls
-                    else:
-                        totalN = self.totalN[selectN]
-                        localweight = 1.0*totalN/totalN.sum()
-                        localweight = localweight.unsqueeze(dim=1).unsqueeze(dim=2)#nlocal*1*1
+    #     step = 0
+    #     for epoch in range(0, args.fedrounds):
+    #         for i, (images, _, idx) in enumerate(self.distil_loader):
+    #             images = images.cuda()
+    #             countN = self.countN
+    #             if self.args.C<1:
+    #                 selectN = random.sample(self.locallist, int(args.C*self.N_parties))
+    #                 countN = self.countN[selectN]
+    #                 if self.clscnt:
+    #                     localweight = countN/countN.sum(dim=0)#nlocal*nclass
+    #                     localweight = localweight.unsqueeze(dim=1)#nlocal*1*ncls
+    #                 else:
+    #                     totalN = self.totalN[selectN]
+    #                     localweight = 1.0*totalN/totalN.sum()
+    #                     localweight = localweight.unsqueeze(dim=1).unsqueeze(dim=2)#nlocal*1*1
                 
-                loss = self.distill_batch_oneshot(self.central, images, idx, selectN, localweight, optimizer)
-                step += 1
-                acc = self.validate_model(self.central)
-                if self.writer is not None:
-                    self.writer.add_scalar('loss', loss.item(), step)
-                    self.writer.add_scalar('DisACC', acc, step)
-                if acc>bestacc:
-                    if bestname:
-                        os.system(f'rm {bestname}')
-                    bestacc = acc
-                    bestname = f'{savename}_i{step}_{(bestacc):.2f}.pt'
-                    torch.save(self.central.state_dict(), bestname)
-                    logging.info(f'========Best...Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
-            scheduler.step()
-            logging.info(f'Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
+    #             loss = self.distill_batch_oneshot(self.central, images, idx, selectN, localweight, optimizer)
+    #             step += 1
+    #             acc = self.validate_model(self.central)
+    #             if self.writer is not None:
+    #                 self.writer.add_scalar('loss', loss.item(), step)
+    #                 self.writer.add_scalar('DisACC', acc, step)
+    #             if self.experiment is not None:
+    #                 self.experiment.log_metric('loss', loss.item(), step=step)
+    #                 self.experiment.log_metric('DisACC', acc, step=step)
+                    
+    #             if acc>bestacc:
+    #                 if bestname:
+    #                     os.system(f'rm {bestname}')
+    #                 bestacc = acc
+    #                 bestname = f'{savename}_i{step}_{(bestacc):.2f}.pt'
+    #                 torch.save(self.central.state_dict(), bestname)
+    #                 logging.info(f'========Best...Iter{step},Epoch{epoch}, Acc{(acc):.2f}')
+    #         scheduler.step()
+    #         logging.info(f'Iter{step},Epoch{epoch}, Acc{(acc):.2f}')

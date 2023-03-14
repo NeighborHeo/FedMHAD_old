@@ -173,7 +173,7 @@ def accuracy(output, target, topk=(1,)):
     usage:
     prec1,prec5=accuracy(output,target,topk=(1,5))
     """
-    print(output.shape, target.shape)
+    # print(output.shape, target.shape)
     
     th_ls = [0.1 * i for i in range(10)]
     opt_th = 0
@@ -185,7 +185,7 @@ def accuracy(output, target, topk=(1,)):
             opt_th = th
 
     acc, pre, rec, f1 = getMetrics(target, output, opt_th)
-    print(f"opt_th: {opt_th:.2f}, best_acc: {best_acc:.2f}, pre: {pre:.2f}, rec: {rec:.2f}, f1: {f1:.2f}")
+    # print(f"opt_th: {opt_th:.2f}, best_acc: {best_acc:.2f}, pre: {pre:.2f}, rec: {rec:.2f}, f1: {f1:.2f}")
         
     res = []
     for k in topk:

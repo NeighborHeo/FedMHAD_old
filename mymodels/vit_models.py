@@ -218,7 +218,7 @@ class VisionTransformer(nn.Module):
         mha = mha[:, :, 0, 1:].reshape(n_Img, nh, -1)
         # mha.shape = 3, 196(14*14)
         mha = mha.reshape(n_Img, nh, w_featmap, h_featmap)
-        mha = nn.functional.interpolate(mha, scale_factor=16, mode="nearest").cpu().numpy()
+        mha = nn.functional.interpolate(mha, scale_factor=16, mode="nearest")
         return mha
 
     def get_attention_maps_postprocessing_(self, x):

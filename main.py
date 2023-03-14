@@ -12,8 +12,27 @@ import mydataset
 from torch.utils.data import DataLoader
 from utils.myfed import *
 import yaml
+
+# import comet_ml at the top of your file
+from comet_ml import Experiment
+
+# Create an experiment with your api key
+experiment = Experiment(
+    api_key="",
+    project_name="",
+    workspace="",
+)
+
 # %%
 if __name__ == "__main__":
+    # set seed 
+    torch.manual_seed(0)
+    torch.cuda.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(0)
+     
     yamlfilepath = pathlib.Path(__file__).parent.absolute().joinpath('config.yaml')
     args = yaml.load(yamlfilepath.open('r'), Loader=yaml.FullLoader)
     args = argparse.Namespace(**args)
@@ -21,7 +40,7 @@ if __name__ == "__main__":
     handlers = [logging.StreamHandler()]
     args.logfile = f'{datetime.now().strftime("%m%d%H%M")}'+args.logfile
     
-    writer = SummaryWriter(comment=args.logfile, comet_config={'disabled': False})
+    writer = SummaryWriter(comment=args.logfile) # comet_config={'disabled': False})
     if not os.path.isdir('./logs'):
         os.mkdir('./logs')
     if args.debug:
@@ -69,12 +88,12 @@ if __name__ == "__main__":
     logging.info("Param size {}".format(np.sum([np.prod(x.size()) for name,x in model.named_parameters() if 'linear2' not in name])))
     
     # 3. fed training
-    fed = FedMAD(model, distill_loader, priv_data, test_loader, writer, args)
-    if args.oneshot:
-        fed.update_distill_loader_wlocals(public_dataset)
-        fed.distill_local_central_oneshot()
-    else:
-        fed.distill_local_central()
+    fed = FedMAD(central= model, distil_loader= distill_loader, private_data= priv_data, val_loader= test_loader, writer=None, experiment=experiment, args=args)
+    # if args.oneshot:
+    #     fed.update_distill_loader_wlocals(public_dataset)
+    #     fed.distill_local_central_oneshot()
+    # else:
+    fed.distill_local_central()
     
     if not args.debug:
         writer.close()
