@@ -28,6 +28,7 @@ def load_dict(savepath, model):
     is_data_parallel = isinstance(model, torch.nn.DataParallel)
     new_pth = {}
     for k, v in pth.items():
+        k = k.replace('module.module.', 'module.')
         if 'module' in k:
             if is_data_parallel: # saved multi-gpu, current multi-gpu
                 new_pth[k] = v
@@ -39,14 +40,16 @@ def load_dict(savepath, model):
             else: # saved 1-gpu, current 1-gpu
                 new_pth[k] = v 
     m, u = model.load_state_dict(new_pth, strict=False)
+    
     if m:
         logging.info('Missing: '+' '.join(m))
     if u:
         logging.info('Unexpected: '+' '.join(u))
+        print('Unexpected: '+' '.join(u))
     return
 
 class EarlyStop(object):
-    def __init__(self, max_plateau, totaliters, bestacc=0, min_increase=0.1):
+    def __init__(self, max_plateau, totaliters, bestacc=0, min_increase=0.0):
         self.bestacc = bestacc
         self.bestiter = 0
         self.totaliters = totaliters
@@ -66,8 +69,7 @@ class EarlyStop(object):
             return True, best
         else:
             return False, best
-
-
+    
 class AverageMeter(object):
     def __init__(self):
         self.avg = 0

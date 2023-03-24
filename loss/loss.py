@@ -13,14 +13,31 @@ class kl_loss(torch.nn.Module):
 
     def forward(self, input, target):
         if self.singlelabel:
-            soft_in = torch.nn.functional.softmax(input/self.T, dim=1)
-            soft_target = torch.nn.functional.softmax(target/self.T, dim=1).float()
-            loss = self.criterion(soft_in.log(), soft_target)
+            soft_in = torch.log_softmax(input/self.T, dim=1)
+            soft_target = torch.softmax(target/self.T, dim=1).float()
+            loss = self.criterion(soft_in, soft_target)
         else:
-            soft_in = torch.nn.functional.sigmoid(input/self.T)
-            soft_target = torch.nn.functional.sigmoid(target/self.T)
+            soft_in = torch.sigmoid(input/self.T)
+            soft_target = torch.sigmoid(target/self.T).float()
             loss = self.criterion(soft_in.log(), soft_target)
         return self.T*self.T*loss
+
+class KLDivLoss(torch.nn.KLDivLoss):
+    def __init__(self, reduction='none', T=2, singlelabel=False):
+        super().__init__(reduction=reduction)
+        self.T = T
+        self.singlelabel = singlelabel
+
+    def forward(self, input, target):
+        if self.singlelabel:
+            preds_ = torch.log_softmax(input/self.T, dim=1)
+            targets_ = torch.softmax(target/self.T, dim=1)
+        
+        else:
+            preds_ = torch.sigmoid(input/self.T)
+            targets_ = torch.sigmoid(target/self.T).float()
+            
+        return super(KLDivLoss, self).forward(preds_, targets_)
 
 def weight_psedolabel(logits, countN, noweight=False, clscount=False, votethresh=0, singlabel=True):#nlcoal*batch*nclass
     #softLogits = torch.nn.Softmax(dim=2)(logits)

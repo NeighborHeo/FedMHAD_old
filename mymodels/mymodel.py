@@ -1,3 +1,8 @@
+# %%
+# import sys
+# sys.path.append('/home/suncheol/code/FedTest/FedMAD2')
+# from mymodels.resnet8 import *
+# from mymodels.vit_models import *
 from .resnet8 import *
 from .vit_models import *
 
@@ -24,8 +29,12 @@ from .vit_models import *
 def define_model(modelname, num_classes, **kwargs):
     if modelname == 'resnet8':
         model = ResNet8(num_classes=num_classes, **kwargs)
-    elif modelname == 'vit_tiny':
+    elif modelname == 'vit_tiny_patch16_224':
         model = vit_tiny_patch16_224(num_classes=num_classes, **kwargs)
+    elif modelname == 'vit_small_patch16_224':
+        model = vit_small_patch16_224(num_classes=num_classes, **kwargs)
+    elif modelname == 'vit_base_patch16_224':
+        model = vit_base_patch16_224(num_classes=num_classes, **kwargs)
     else:
         raise ValueError('modelname should be resnet8 or vit_tiny')
     
@@ -37,3 +46,12 @@ def define_model(modelname, num_classes, **kwargs):
         model = model.cuda()
     
     return model
+
+if __name__ == '__main__':
+    model = define_model(modelname='vit_tiny_patch16_224', num_classes=20)
+    import utils.utils as utils
+    #state_dict_path = '/home/suncheol/code/FedTest/FedMAD2/checkpoints/pascal_voc2012/vit_tiny_patch16_224_multilabel_only/a1.0+sd1+e300+b128+lkl+slmha/model-0.pth'
+    state_dict_path = '/home/suncheol/code/FedTest/FedMAD2/checkpoints/pascal_voc2012/vit_tiny_patch16_224_multilabel_only/a1.0+sd1+e300+b128+lkl+slmha/model-0.pth'
+    
+    utils.load_dict(state_dict_path, model)
+# %%
