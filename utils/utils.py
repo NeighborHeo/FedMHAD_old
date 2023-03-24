@@ -40,12 +40,10 @@ def load_dict(savepath, model):
             else: # saved 1-gpu, current 1-gpu
                 new_pth[k] = v 
     m, u = model.load_state_dict(new_pth, strict=False)
-    
     if m:
         logging.info('Missing: '+' '.join(m))
     if u:
         logging.info('Unexpected: '+' '.join(u))
-        print('Unexpected: '+' '.join(u))
     return
 
 class EarlyStop(object):

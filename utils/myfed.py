@@ -56,7 +56,7 @@ class FedMAD:
         
         # import ipdb; ipdb.set_trace()
         #path to save ckpt
-        self.rootdir = f'./checkpoints/{args.dataset}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}+l{self.args.lossmode}+sl{self.args.sublossmode}'
+        self.rootdir = f'./checkpoints/{args.dataset}/{args.model_name}_{args.task_name}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}+l{self.args.lossmode}+sl{self.args.sublossmode}'
         if not os.path.isdir(self.rootdir):
             os.makedirs(self.rootdir)
         if initpth:

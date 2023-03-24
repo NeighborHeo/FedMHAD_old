@@ -214,7 +214,7 @@ if os.path.exists(loadname):
     logging.info(f'Loading Local{n}......', 'filepath : ', loadname)
     utils.load_dict(loadname, central_model)
 # models.append(central_model)
-loss_function = Loss.mha_loss()
+loss_function = Loss.MHALoss()
 # loss_function = loss_function.
 mha, th = central_model.module.get_attention_maps_postprocessing_(images.cuda())
 # mha_images = []
