@@ -37,6 +37,6 @@ clscnt: 1 # help="local weight specific to class"
 lossmode: kl # help="kl or l1"
 sublossmode: mha # mha # help="at or mha"
 singlelabel: False # help="single label"
-task_name: multilabel # help="task name"
+task: multilabel # help="task name"
  
   

@@ -75,6 +75,21 @@ transformations_test = transforms.Compose([transforms.ToPILImage(),
                                         transforms.Lambda(lambda crops: torch.stack([transforms.Normalize(mean = mean, std = std)(crop) for crop in crops])),
                                         ])
 
+def filter_images_by_label_type(task, imgs, labels):
+    if task == 'singlelabel':
+        sum_labels = np.sum(labels, axis=1)
+        index = np.where(sum_labels == 1)
+        labels = labels[index]
+        imgs = imgs[index]
+    elif task == 'multilabel_only':
+        sum_labels = np.sum(labels, axis=1)
+        index = np.where(sum_labels > 1)
+        labels = labels[index]
+        imgs = imgs[index]
+    elif task == 'multilabel':
+        pass
+    return imgs, labels
+
 def dirichlet_datasplit(args, privtype='cifar10', publictype='cifar100', N_parties=20, online=True, public_percent=1):
     #public cifar100
     print(privtype, publictype)
@@ -104,12 +119,14 @@ def dirichlet_datasplit(args, privtype='cifar10', publictype='cifar100', N_parti
         public_imgs = np.load(path.joinpath('coco_img.npy'))
         public_labels = np.load(path.joinpath('coco_label.npy'))
         print("size of public dataset: ", public_imgs.shape, "images")
+        public_imgs, public_labels = filter_images_by_label_type(args.task, public_imgs, public_labels)
         public_dataset = mydataset(public_imgs, public_labels) # transforms=transformations_valid)
         
         path = pathlib.Path(args.datapath).joinpath('PASCAL_VOC_2012')
         test_imgs = np.load(path.joinpath('PASCAL_VOC_val_224_Img.npy'))
         test_labels = np.load(path.joinpath('PASCAL_VOC_val_224_Label.npy'))
         print("size of test dataset: ", test_imgs.shape, "images")
+        test_imgs, test_labels = filter_images_by_label_type(args.task, test_imgs, test_labels)
         test_dataset = mydataset(test_imgs, test_labels) # transforms=transformations_valid)
         
 
@@ -176,8 +193,8 @@ def dirichlet_datasplit(args, privtype='cifar10', publictype='cifar100', N_parti
             path = pathlib.Path(args.datapath).joinpath('PASCAL_VOC_2012', 'dirichlet', f'alpha_{args.alpha:.0f}')
             party_img = np.load(path.joinpath(f'Party_{i}_X_data.npy'))
             party_label = np.load(path.joinpath(f'Party_{i}_y_data.npy'))
+            party_img, party_label = filter_images_by_label_type(args.task, party_img, party_label)
             priv_data[i]['x'] = party_img.copy()
-            
             priv_data[i]['y'] = party_label.copy()
         
         print(f"y label : {priv_data[0]['y']}")
