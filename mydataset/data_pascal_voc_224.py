@@ -52,7 +52,18 @@ class mydataset(torch.utils.data.Dataset):
 
 mean=[0.485, 0.456, 0.406]
 std=[0.229, 0.224, 0.225]
-transformations_train = transforms.Compose([transforms.ToPILImage(),
+# transformations_train = transforms.Compose([transforms.ToPILImage(),
+#                                 transforms.RandomChoice([
+#                                     transforms.ColorJitter(brightness=(0.80, 1.20)),
+#                                     transforms.RandomGrayscale(p = 0.25)
+#                                     ]),
+#                                 transforms.RandomHorizontalFlip(p = 0.25),
+#                                 transforms.RandomRotation(25),
+#                                 transforms.ToTensor(),
+#                                 transforms.Normalize(mean = mean, std = std),
+#                             ])
+transformations_train = transforms.Compose([
+                                transforms.ToPILImage(),
                                 transforms.RandomChoice([
                                     transforms.ColorJitter(brightness=(0.80, 1.20)),
                                     transforms.RandomGrayscale(p = 0.25)
@@ -60,7 +71,6 @@ transformations_train = transforms.Compose([transforms.ToPILImage(),
                                 transforms.RandomHorizontalFlip(p = 0.25),
                                 transforms.RandomRotation(25),
                                 transforms.ToTensor(),
-                                transforms.Normalize(mean = mean, std = std),
                             ])
 transformations_valid = transforms.Compose([transforms.ToPILImage(),
                                         transforms.CenterCrop(224), 
@@ -116,11 +126,18 @@ def dirichlet_datasplit(args, privtype='cifar10', publictype='cifar100', N_parti
     elif publictype== 'mscoco':
         import pathlib
         path = pathlib.Path(args.datapath).joinpath('MSCOCO')
-        public_imgs = np.load(path.joinpath('coco_img.npy'))
+        public_imgs = np.load(path.joinpath('coco_img.npy')).transpose(0, 2, 3, 1)
+        public_imgs = (public_imgs*255.0).round().astype(np.uint8)
         public_labels = np.load(path.joinpath('coco_label.npy'))
+        # random sampling 1/10 of the data
+        index = np.random.choice(public_imgs.shape[0], int(public_imgs.shape[0]/10), replace=False)
+        public_imgs = public_imgs[index]
+        public_labels = public_labels[index]
+        
         print("size of public dataset: ", public_imgs.shape, "images")
         public_imgs, public_labels = filter_images_by_label_type(args.task, public_imgs, public_labels)
-        public_dataset = mydataset(public_imgs, public_labels) # transforms=transformations_valid)
+        public_dataset = mydataset(public_imgs, public_labels, transforms=transformations_train)
+        # transforms=transformations_valid)
         
         path = pathlib.Path(args.datapath).joinpath('PASCAL_VOC_2012')
         test_imgs = np.load(path.joinpath('PASCAL_VOC_val_224_Img.npy'))

@@ -16,12 +16,7 @@ import yaml
 # import comet_ml at the top of your file
 from comet_ml import Experiment
 
-# Create an experiment with your api key
-experiment = Experiment(
-    api_key="",
-    project_name="",
-    workspace="",
-)
+torch.autograd.set_detect_anomaly(True)
 
 # %%
 if __name__ == "__main__":
@@ -34,8 +29,27 @@ if __name__ == "__main__":
     np.random.seed(0)
      
     yamlfilepath = pathlib.Path(__file__).parent.absolute().joinpath('config.yaml')
-    args = yaml.load(yamlfilepath.open('r'), Loader=yaml.FullLoader)
-    args = argparse.Namespace(**args)
+    with yamlfilepath.open('r') as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
+    args = argparse.Namespace(**config)
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name", default=config.get("model_name"), help="model name")
+    parser.add_argument("--sublossmode", default=config.get("sublossmode"), help="at or mha")
+    parser.add_argument("--task", default=config.get("task"), help="task name")
+    parser.add_argument("--distill_heads", type=int, default=config.get("distill_heads"), help="distill heads")
+    parser.add_argument("--lambda_kd", type=float, default=config.get("lambda_kd"), help="lambda kd")
+    args = parser.parse_args(namespace=args)
+
+    # args to dict 
+    # Create an experiment with your api key
+    experiment = Experiment(
+        api_key="3JenmgUXXmWcKcoRk8Yra0XcD",
+        project_name=f"fedmhad-{args.task}",
+        workspace="neighborheo",
+    )
+    experiment.log_parameters(vars(args))
+    
     os.environ['CUDA_VISIBLE_DEVICES']=args.gpu
     handlers = [logging.StreamHandler()]
     args.logfile = f'{datetime.now().strftime("%m%d%H%M")}'+args.logfile
@@ -94,6 +108,7 @@ if __name__ == "__main__":
     #     fed.distill_local_central_oneshot()
     # else:
     fed.distill_local_central()
+    print('done')
     
     if not args.debug:
         writer.close()

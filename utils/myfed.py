@@ -46,7 +46,7 @@ class FedMAD:
         if args.sublossmode=='at':
             self.sub_criterion = Loss.at_loss()
         elif args.sublossmode=='mha':
-            self.sub_criterion = Loss.MHALoss()
+            self.sub_criterion = Loss.MHALoss(distill_heads=args.distill_heads)
         else:
             self.sub_criterion = None
         
@@ -62,9 +62,9 @@ class FedMAD:
         if initpth:
             if not args.subpath:
                 if args.oneshot:
-                    args.subpath = f'oneshot_c{args.C}_q{args.quantify}_n{args.noisescale}'
+                    args.subpath = f'oneshot_c{args.C}_q{args.quantify}_n{args.noisescale}_h{args.distill_heads}'
                 else:
-                    args.subpath = f'oneshot_c{args.C}_q{args.quantify}_n{args.noisescale}'
+                    args.subpath = f'oneshot_c{args.C}_q{args.quantify}_n{args.noisescale}_h{args.distill_heads}'
             self.savedir = os.path.join(self.rootdir, args.subpath)
             if not os.path.isdir(self.savedir):
                 os.makedirs(self.savedir)
@@ -171,16 +171,21 @@ class FedMAD:
 
     def get_total_logits(self, model, images, selectN, usecentral=True):
         if usecentral:
-            total_logits = self.central(images).detach()
+            total_logits, total_attns = self.central(images).detach()
         else:
             total_logits = []
+            total_attns = []
             for n in selectN:
                 tmodel = copy.deepcopy(self.localmodels[n])
-                logits = torch.sigmoid(tmodel(images).detach())
+                # logits = torch.sigmoid(tmodel(images).detach())
+                logits, attn = tmodel(images, return_attn=True)
+                logits = torch.sigmoid(logits).detach()
                 total_logits.append(logits)
+                total_attns.append(attn.detach())
                 del tmodel
             total_logits = torch.stack(total_logits)
-        return total_logits
+            total_attns = torch.stack(total_attns)
+        return total_logits, total_attns
         
     def compute_class_weights(self, class_counts):
         """
@@ -190,7 +195,7 @@ class FedMAD:
             class_weights (torch.Tensor): (num_samples, num_classes)
         """
         # Normalize the class counts per sample
-        class_weights = class_counts / class_counts.sum(dim=1, keepdim=True)
+        class_weights = class_counts / class_counts.sum(dim=0, keepdim=True)
         return class_weights
         
     def compute_ensemble_logits(self, client_logits, class_weights):
@@ -221,7 +226,8 @@ class FedMAD:
 
     def compute_cosine_similarity(self, vector_a, vector_b):
         # print(vector_a.shape, vector_b.shape)
-        return torch.tensor(1) - (torch.sum(vector_a * vector_b, dim=-1) / (torch.norm(vector_a, dim=-1) * torch.norm(vector_b, dim=-1)))
+        cs = torch.sum(vector_a * vector_b, dim=-1) / (torch.norm(vector_a, dim=-1) * torch.norm(vector_b, dim=-1))
+        return cs
 
     def calculate_normalized_similarity_weights(self, target_vectors, client_vectors, similarity_method='euclidean'):
         if similarity_method == 'euclidean':
@@ -234,49 +240,47 @@ class FedMAD:
         target_vectors_expanded = target_vectors.unsqueeze(0)  # Shape: (1, batch_size, n_class)
         
         similarities = similarity_function(target_vectors_expanded, client_vectors)  # Shape: (n_client, batch_size)
-        # print(similarities.shape)
         mean_similarities = torch.mean(similarities, dim=1)  # Shape: (n_client)
-        # print(mean_similarities)
         normalized_similarity_weights = mean_similarities / torch.sum(mean_similarities)  # Shape: (n_client)
+        # print("normalized_similarity_weights", normalized_similarity_weights)
         # print(normalized_similarity_weights)
         return normalized_similarity_weights
 
 
     def distill_onemodel_batch(self, model, images, selectN, optimizer, usecentral=True):
         ''' for ensemble logits '''
-        total_logits = self.get_total_logits(model, images, selectN, usecentral=usecentral)
-        ensemble_logits = self.get_ensemble_logits(total_logits, selectN)
-        sim_weights = self.calculate_normalized_similarity_weights(ensemble_logits, total_logits, "cosine")
-        
-        # ''' for subloss '''
-        # if self.args.sublossmode=='at':
-        # if self.args.sublossmode=='mha':
-        #     # union, intersection = Loss.weight_multihead_attention_map(total_mha, self.countN)
+        with torch.autograd.set_detect_anomaly(True):
+            total_logits, total_attns = self.get_total_logits(model, images, selectN, usecentral=usecentral)
+            ensemble_logits = self.get_ensemble_logits(total_logits, selectN)
+            sim_weights = self.calculate_normalized_similarity_weights(ensemble_logits, total_logits, "cosine")
+            
+            model.train()
+            central_logits, central_attn = model(images, return_attn=True)
+            central_logits = torch.sigmoid(central_logits)
+            logit_loss = self.criterion(central_logits, ensemble_logits)
+            
+            if self.args.sublossmode=='at':
+                total_gradcam = self.getTotalGradcam(model, images, selectN, usecentral=usecentral)
+                union, intersection = Loss.weight_gradcam(total_gradcam, self.countN)
+                gradcam = model.module.get_class_activation_map(images, y=None)
+                sub_loss = self.sub_criterion(union, intersection, gradcam) * self.args.lambda_kd
+            elif self.args.sublossmode=='mha':
+                # union, intersection = self.sub_criterion.get_union_intersection_image(total_attns)
+                # # total_mha = self.get_total_multi_head_attention_map(model, images, selectN)
+                # # mha = model.module.get_attention_maps_postprocessing(images)
+                # sub_loss = self.sub_criterion(union, intersection, central_attn)
+                # print('sim_weights : ', sim_weights)
+                sub_loss = self.sub_criterion(total_attns, central_attn, sim_weights) * self.args.lambda_kd
+            else : 
+                sub_loss = torch.tensor(0.0).cuda()
+            
+            total_loss = logit_loss + sub_loss
+            # print('logit_loss : ', logit_loss, 'sub_loss : ', sub_loss, 'total_loss : ', total_loss)
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
 
-        model.train()
-        central_logits = torch.sigmoid(model(images))
-        logit_loss = self.criterion(central_logits, ensemble_logits)
-        # ensemble_logits = nclient * batch * ncls
-        
-        if self.args.sublossmode=='at':
-            total_gradcam = self.getTotalGradcam(model, images, selectN, usecentral=usecentral)
-            union, intersection = Loss.weight_gradcam(total_gradcam, self.countN)
-            gradcam = model.module.get_class_activation_map(images, y=None)
-            sub_loss = self.sub_criterion(union, intersection, gradcam)
-        elif self.args.sublossmode=='mha':
-            total_mha = self.get_total_multi_head_attention_map(model, images, selectN)
-            mha = model.module.get_attention_maps_postprocessing(images)
-            sub_loss = self.sub_criterion(total_mha, mha, sim_weights)
-        else : 
-            sub_loss = torch.tensor(0.0).cuda()
-        # print('loss', logit_loss, 'sub_loss', sub_loss, 'total_loss', logit_loss+sub_loss)
-        # total_loss = logit_loss + sub_loss
-        # print('logit_loss : ', logit_loss, 'sub_loss : ', sub_loss, 'total_loss : ', total_loss)
-        optimizer[0].zero_grad()
-        # total_loss.backward()
-        print('sub_loss : ', sub_loss.grad_fn)
-        sub_loss.backward()
-        optimizer[0].step()
+                
         return logit_loss, sub_loss
 
     def distill_local_central(self):
@@ -289,10 +293,8 @@ class FedMAD:
         ]
         if self.args.optim == 'SGD':
             optimizer = optim.SGD( params= parameters, lr=self.args.dis_lr, momentum=self.args.momentum, weight_decay=self.args.wdecay)
-            optimizer2 = optim.SGD( params= net.module.parameters(), lr=self.args.dis_lr*1000, momentum=self.args.momentum, weight_decay=self.args.wdecay)
         else:    
             optimizer = optim.Adam( params= parameters, lr=self.args.dis_lr, betas=(self.args.momentum, 0.999), weight_decay=args.wdecay)
-            optimizer2 = optim.Adam( params= net.module.parameters(), lr=self.args.dis_lr*1000, betas=(self.args.momentum, 0.999), weight_decay=args.wdecay)
             
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, float(args.fedrounds), eta_min=self.args.dis_lrmin,)
         
@@ -315,7 +317,7 @@ class FedMAD:
                 if self.args.C<1:
                     selectN = random.sample(self.locallist, int(args.C*self.N_parties))
                 
-                loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, [optimizer, optimizer2], usecentral=False) 
+                loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, optimizer, usecentral=False) 
                 loss_avg += loss.item()
                 sub_loss_avg += subloss.item()
                 step += 1
@@ -327,30 +329,32 @@ class FedMAD:
                 last_acc = self.validate_model(self.central)
                 acc = last_acc
                  
-            if self.writer is not None:
-                self.writer.add_scalar('loss', loss, epoch, display_name='loss')
-                self.writer.add_scalar('at_loss', subloss, epoch, display_name='at_loss')
-                self.writer.add_scalar('DisACC', acc, epoch, display_name='DisACC')
-            if self.experiment is not None:
-                self.experiment.log_metric('lg_loss', loss_avg, step=epoch)
-                self.experiment.log_metric('at_loss', sub_loss_avg, step=epoch)
-                self.experiment.log_metric('DisACC', acc, step=epoch)
-            
-            logging.info(f'Epoch{epoch}, Acc{(acc):.2f}')
-            stop, best = earlyStop.update(step, acc)
+            logging.info(f'Epoch{epoch}, Acc{(acc):.4f}')
+            stop, best = earlyStop.update(epoch, acc)
             if best:
                 if bestname:
                     os.system(f'rm {bestname}')
                 bestacc = acc
-                bestname = f'{savename}_e{epoch}_{(bestacc):.2f}.pt'
+                bestname = f'{savename}_e{epoch}_{(bestacc):.4f}.pt'
                 torch.save(self.central.state_dict(), bestname)
-                logging.info(f'========Best...Epoch{epoch}, Acc{(acc):.2f}')
+                logging.info(f'========Best...Epoch{epoch}, Acc{(acc):.4f}')
             else:
-                logging.info(f'Epoch{epoch}, Acc{(acc):.2f}')
-                
+                logging.info(f'Epoch{epoch}, Acc{(acc):.4f}')
+            
+            if self.writer is not None:
+                self.writer.add_scalar('loss', loss, epoch, display_name='loss')
+                self.writer.add_scalar('at_loss', subloss, epoch, display_name='at_loss')
+                self.writer.add_scalar('DisACC', acc, epoch, display_name='DisACC')
+                self.writer.add_scalar('BestACC', bestacc, epoch, display_name='BestACC')
+            if self.experiment is not None:
+                self.experiment.log_metric('lg_loss', loss_avg, step=epoch)
+                self.experiment.log_metric('at_loss', sub_loss_avg, step=epoch)
+                self.experiment.log_metric('DisACC', acc, step=epoch)
+                self.experiment.log_metric('BestACC', bestacc, step=epoch)
+            
             scheduler.step()
             if stop:
-                logging.info(f'Early Stop at Epoch{epoch}, Acc{(acc):.2f}')
+                logging.info(f'Early Stop at Epoch{epoch}, Acc{(acc):.4f}')
                 break
     
     def validate_model(self, model):
@@ -381,7 +385,11 @@ class FedMAD:
                 # testacc.update(acc)
         output = np.concatenate(output_list, axis=0)
         target = np.concatenate(target_list, axis=0)
-        acc, = utils.accuracy(output, target)
+        if self.args.task == 'singlelabel':
+            acc = utils.accuracyforsinglelabel(output, target)
+        else:
+            acc, = utils.accuracy(output, target)
+        
         self.prev_acc = acc
         self.prev_model_state_dist = copy.deepcopy(model.state_dict())
         return acc
@@ -398,9 +406,10 @@ class FedMAD:
         args = self.args
         writer = self.writer
         datasize = len(tr_dataset)
-        # criterion = nn.CrossEntropyLoss() #include softmax
-        # multi label
-        criterion = torch.nn.MultiLabelSoftMarginLoss() # torch.nn.BCEWithLogitsLoss(reduction='mean')
+        if self.args.task == 'singlelabel':
+            criterion = nn.CrossEntropyLoss() #include softmax
+        else:
+            criterion = torch.nn.MultiLabelSoftMarginLoss() # torch.nn.BCEWithLogitsLoss(reduction='mean')
         optimizer = optim.SGD(model.parameters(), args.lr, momentum=0.9, weight_decay=3e-4)
         m = torch.nn.Sigmoid()
 
@@ -421,8 +430,10 @@ class FedMAD:
                 output = model(images)
                 # import ipdb; ipdb.set_trace()
                 loss = criterion(output, target)
-
-                acc,  = utils.accuracy(m(output).detach().cpu().numpy(), target.detach().cpu().numpy())
+                if self.args.task == 'singlelabel':
+                    acc = utils.accuracyforsinglelabel(output.detach().cpu().numpy(), target.detach().cpu().numpy())
+                else:
+                    acc,  = utils.accuracy(m(output).detach().cpu().numpy(), target.detach().cpu().numpy())
                 tracc.update(acc)
                 trloss.update(loss.item())
                 optimizer.zero_grad()
@@ -441,7 +452,10 @@ class FedMAD:
                     images = images.cuda()
                     target = target.cuda()
                     output = model(images)
-                    acc, = utils.accuracy(m(output).detach().cpu().numpy(), target.detach().cpu().numpy())
+                    if self.args.task == 'singlelabel':
+                        acc = utils.accuracyforsinglelabel(m(output).detach().cpu().numpy(), target.detach().cpu().numpy())
+                    else:
+                        acc, = utils.accuracy(m(output).detach().cpu().numpy(), target.detach().cpu().numpy())
                     testacc.update(acc)
                 if writer is not None:
                     writer.add_scalar(str(modelid)+'testacc', testacc.avg, epoch, display_name=str(modelid)+'testacc')

@@ -37,7 +37,7 @@ def compute_class_weights(class_counts):
         class_weights (torch.Tensor): (num_samples, num_classes)
     """
     # Normalize the class counts per sample
-    class_weights = class_counts / class_counts.sum(dim=1, keepdim=True)
+    class_weights = class_counts / class_counts.sum(dim=0, keepdim=True)
     return class_weights
 
 def compute_ensemble_logits(client_logits, class_weights):
@@ -141,8 +141,12 @@ if __name__ == '__main__':
     client_attentions = make_random_client_attentions(n_clients, batch_size, n_heads, img_h, img_w)
     central_attentions = torch.randn(batch_size, n_heads, img_h, img_w)
     
-    example_of_calculate_normalized_similarity_weights()
-    
+    # example_of_calculate_normalized_similarity_weights()
+
+    sum_counts = class_counts.sum()
+    localweight = 1.0*class_counts/sum_counts
+    localweight = localweight.unsqueeze(dim=1).unsqueeze(dim=2)#nlocal*1*1
+
     class_weights = compute_class_weights(class_counts)
     # print('class_weights[:,0] : ', class_weights[:,0])
     # print('client_logits[:,0,0] : ', client_logits[:,0,0])

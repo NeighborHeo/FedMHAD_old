@@ -93,10 +93,16 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-    def forward(self, x):
-        x = x + self.drop_path1(self.attn(self.norm1(x)))
-        x = x + self.drop_path2(self.mlp(self.norm2(x)))
-        return x
+    def forward(self, x, return_attn=False):
+        if return_attn:
+            val, attn = self.attn(self.norm1(x), return_attn=True)
+            x = x + self.drop_path1(val)
+            x = x + self.drop_path2(self.mlp(self.norm2(x)))
+            return x, attn
+        else:
+            x = x + self.drop_path1(self.attn(self.norm1(x)))
+            x = x + self.drop_path2(self.mlp(self.norm2(x)))
+            return x
 
 class VisionTransformer(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, 
@@ -158,7 +164,7 @@ class VisionTransformer(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def forward(self, x):
+    def forward(self, x, return_attn=False):
         B = x.shape[0]
 
         x = self.patch_embed(x)
@@ -171,10 +177,18 @@ class VisionTransformer(nn.Module):
         x = self.pos_drop(x)
         
         for blk in self.blocks:
-            x = blk(x)
+            # if last block
+            if blk == self.blocks[-1]:
+                x, attn = blk(x, return_attn=True)
+            else:
+                x = blk(x)
         x = self.norm(x)
         
         x = self.head(x[:, 0])
+        
+        if return_attn:
+            return x, attn
+        
         return x
     
     def get_class_activation_map(self, x, y):
@@ -208,17 +222,17 @@ class VisionTransformer(nn.Module):
     def get_attention_maps_postprocessing(self, x):
         # x.shape = (batch, channel, height, width) = 16, 3, 197, 197
         mha = self.get_attention_maps(x)[-1]
-        
-        # mha.shape = (batch, head, height, width) = 16, 3, 197, 197
-        w_featmap = x.shape[-2] // 16
-        h_featmap = x.shape[-1] // 16
-        n_Img, nh, _, _ = mha.shape
-        # w_featmap = 14, h_featmap = 14, nh = 3
-        # we keep only the output patch attention
-        mha = mha[:, :, 0, 1:].reshape(n_Img, nh, -1)
-        # mha.shape = 3, 196(14*14)
-        mha = mha.reshape(n_Img, nh, w_featmap, h_featmap)
-        mha = nn.functional.interpolate(mha, scale_factor=16, mode="nearest")
+        # print(mha.shape)
+        # # mha.shape = (batch, head, height, width) = 16, 3, 197, 197
+        # w_featmap = x.shape[-2] // 16
+        # h_featmap = x.shape[-1] // 16
+        # n_Img, nh, _, _ = mha.shape
+        # # w_featmap = 14, h_featmap = 14, nh = 3
+        # # we keep only the output patch attention
+        # mha = mha[:, :, 0, 1:].reshape(n_Img, nh, -1)
+        # # mha.shape = 3, 196(14*14)
+        # mha = mha.reshape(n_Img, nh, w_featmap, h_featmap)
+        # # mha = nn.functional.interpolate(mha, scale_factor=16, mode="nearest")
         return mha
 
     def get_attention_maps_postprocessing_(self, x):
@@ -292,9 +306,13 @@ def vit_base_patch16_224(pretrained=False, patch_size=16, num_heads=12, **kwargs
         patch_size=patch_size, num_heads=num_heads, embed_dim=768, depth=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     if pretrained:
-        checkpoint = torch.hub.load_state_dict_from_url(
-            url="https://dl.fbaipublicfiles.com/deit/deit_base_patch16_224-b5f2ef4d.pth",
-            map_location="cpu", check_hash=True
-        )
-        model.load_state_dict(checkpoint["model"])
+        # checkpoint = torch.hub.load_state_dict_from_url(
+        #     url="https://dl.fbaipublicfiles.com/deit/deit_base_patch16_224-b5f2ef4d.pth",
+        #     map_location="cpu", check_hash=True
+        # )
+        # model.load_state_dict(checkpoint["model"])
+        import timm
+        temp_model = timm.create_model('vit_base_patch16_224', pretrained=True, num_classes=20)
+        m, u = model.load_state_dict(temp_model.state_dict(), strict=False)
+        print(m, u)
     return model

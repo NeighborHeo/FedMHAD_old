@@ -47,7 +47,7 @@ def load_dict(savepath, model):
     return
 
 class EarlyStop(object):
-    def __init__(self, max_plateau, totaliters, bestacc=0, min_increase=0.0):
+    def __init__(self, max_plateau, totaliters, bestacc=0, min_increase=0.001):
         self.bestacc = bestacc
         self.bestiter = 0
         self.totaliters = totaliters
@@ -59,6 +59,7 @@ class EarlyStop(object):
         if best:
             self.bestacc = acc
             self.bestiter = itern
+            logging.info(f'Best: {itern}...{self.bestacc}, Bestiter : {self.bestiter}')
         if itern==self.totaliters:
             logging.info(f'Total: {itern}...Bestiter{self.bestiter}')
             return True, best
@@ -66,6 +67,7 @@ class EarlyStop(object):
             logging.info(f'Plateau: {itern}-{self.bestiter}...Total{self.totaliters}')
             return True, best
         else:
+            logging.info(f'Continue: {itern}-{self.bestiter}...Bestiter{self.bestiter}')
             return False, best
     
 class AverageMeter(object):
@@ -167,6 +169,19 @@ def getMetrics(y_true, y_score, th):
 #         correct_k = correct[:k].view(-1).float().sum(0)
 #         res.append(correct_k.mul_(100.0 / batchsize).item())
 #     return res
+
+def accuracyforsinglelabel(output, target, topk=(1,)):
+    output = torch.tensor(output)
+    target = torch.tensor(target)
+    if len(output.shape) == 2:
+        predicted = output.argmax(dim=1)
+    if len(target.shape) == 2:
+        target = target.argmax(dim=1)
+    
+    total, correct = 0, 0
+    total += target.size(0)
+    correct += predicted.eq(target).sum().item()
+    return correct / total
 
 def accuracy(output, target, topk=(1,)):
     """

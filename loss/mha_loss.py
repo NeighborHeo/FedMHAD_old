@@ -11,13 +11,31 @@ import numpy as np
 import torch.optim as optim
 from .objectives import GradientLoss
 
+def cos_sim(a: torch.Tensor, b: torch.Tensor):
+    if not isinstance(a, torch.Tensor):
+        a = torch.tensor(a)
+
+    if not isinstance(b, torch.Tensor):
+        b = torch.tensor(b)
+
+    if len(a.shape) == 1:
+        a = a.unsqueeze(0)
+
+    if len(b.shape) == 1:
+        b = b.unsqueeze(0)
+
+    a_norm = torch.nn.functional.normalize(a, p=2, dim=1)
+    b_norm = torch.nn.functional.normalize(b, p=2, dim=1)
+    return torch.mm(a_norm, b_norm.transpose(0, 1))  # 对角线上是an向量bn向量对位相乘再相加
+
 class MHALoss(torch.nn.Module):
     '''
     summary : FedMHAD (Multihead Attention loss)
     '''
-    def __init__(self):
+    def __init__(self, distill_heads = 3):
         super(MHALoss, self).__init__()
         self.cosine_similarity = nn.CosineSimilarity(dim=0, eps=1e-8)
+        self.distill_heads = distill_heads
         
     def forward(self, client_attentions, central_attention, weight):
         '''
@@ -33,8 +51,9 @@ class MHALoss(torch.nn.Module):
             self.weight = torch.tensor(weight, dtype=torch.float)
         else:
             self.weight = torch.ones(self.num_clients, dtype=torch.float)
-        # mha_images = mha_images[:, :, 0:2, :, :]
-        # target = target[:, 0:2, :, :]
+            
+        client_attentions = client_attentions[:, :, 0:self.distill_heads, :, :]
+        central_attention = central_attention[:, 0:self.distill_heads, :, :]
         # assert len(clients_output) == self.num_clients, "Number of clients_output should match num_clients"
         num_clients = client_attentions.shape[0]
         loss = 0
@@ -42,7 +61,7 @@ class MHALoss(torch.nn.Module):
             cosine_sim = self.cosine_similarity(client_attentions[i].contiguous().view(-1), central_attention.contiguous().view(-1))
             loss += self.weight[i] * (1 - cosine_sim).mean()
         loss /= num_clients
-        print('MHA Loss : ', loss)
+        # print('MHA Loss : ', loss)
         return loss
 
 class CosineSimilarityGradientLoss(GradientLoss):
