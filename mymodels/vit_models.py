@@ -36,6 +36,7 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
+        self.excluded_heads = None
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -50,6 +51,15 @@ class Attention(nn.Module):
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
+
+        # ----------------------------------
+        if self.excluded_heads is not None:
+            attn_mask = torch.ones_like(attn)
+            for head_idx in self.excluded_heads:
+                attn_mask[:, head_idx, :, :] = 0
+            attn = attn * attn_mask
+        # ----------------------------------
+
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C) 
@@ -115,7 +125,6 @@ class VisionTransformer(nn.Module):
 
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim
-
         self.patch_embed = embed_layer(
             img_size=img_size,
             patch_size=patch_size,
@@ -190,7 +199,11 @@ class VisionTransformer(nn.Module):
             return x, attn
         
         return x
-    
+
+    def setExcludedHead(self, excluded_head):
+        for block in self.blocks:
+            block.attn.excluded_heads = excluded_head
+
     def get_class_activation_map(self, x, y):
         targets = None 
         def reshape_transform(tensor, height=14, width=14):

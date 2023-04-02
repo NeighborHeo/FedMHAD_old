@@ -56,7 +56,8 @@ class FedMAD:
         
         # import ipdb; ipdb.set_trace()
         #path to save ckpt
-        self.rootdir = f'./checkpoints/{args.dataset}/{args.model_name}_{args.task}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}+l{self.args.lossmode}+sl{self.args.sublossmode}'
+        noise = '_noisy' if args.noise else ''
+        self.rootdir = f'./checkpoints/{args.dataset}/{args.model_name}_{args.task}{noise}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}+l{self.args.lossmode}+sl{self.args.sublossmode}'
         if not os.path.isdir(self.rootdir):
             os.makedirs(self.rootdir)
         if initpth:
@@ -169,7 +170,7 @@ class FedMAD:
         '''
         return torch.stack([self.get_multi_head_attention_map(self.localmodels[n], images) for n in selectN]) # n_client * batch * nhead * 224 * 224
 
-    def get_total_logits(self, model, images, selectN, usecentral=True):
+    def get_total_logits(self, model, images, labels, selectN, usecentral=True):
         if usecentral:
             total_logits, total_attns = self.central(images).detach()
         else:
@@ -211,15 +212,39 @@ class FedMAD:
         sum_weights = torch.sum(class_weights, dim=0)  # (num_classes)
         ensemble_logits = sum_weighted_logits / sum_weights
         return ensemble_logits
-
-    def get_ensemble_logits(self, total_logits, selectN):
-        class_counts = self.countN[selectN]
-        class_weights = self.compute_class_weights(torch.from_numpy(class_counts).float().cuda())
-        if self.voteout:
-            ensemble_logits = Loss.weight_psedolabel(total_logits, self.countN[selectN], noweight=True).detach()
+    
+    def get_clients_average_precision_per_class(self, client_logits, client_labels, num_classes):
+        """
+        Args:
+            client_logits (torch.Tensor): (batch_size, num_classes)
+            client_labels (torch.Tensor): (batch_size, num_classes)
+            num_classes (int): number of classes
+        Returns:
+            average_precision_per_class (torch.Tensor): (num_classes)
+        """
+        average_precision_per_class = torch.zeros(num_classes)
+        for i in range(num_classes):
+            average_precision_per_class[i] = average_precision_score(client_labels[:, i], client_logits[:, i])
+        return average_precision_per_class
+    
+    def get_logit_weights(self, client_logits, labels, selectN, method='accuracy'):
+        """
+        Args:
+            client_logits (torch.Tensor): (num_samples, batch_size, num_classes)
+            labels (torch.Tensor): (batch_size, num_classes)
+            selectN (list): list of client number
+        Returns:
+            logit_weights (torch.Tensor): (num_samples, batch_size, num_classes)
+        """
+        if method == 'sample_count':
+            
+        elif method == 'average_precision':
+            logit_weights = torch.zeros(client_logits.shape)
+            for i, n in enumerate(selectN):
+                logit_weights[i] = self.get_clients_average_precision_per_class(client_logits[i], labels, self.num_classes).unsqueeze(0)
         else:
-            ensemble_logits = self.compute_ensemble_logits(total_logits, class_weights)
-        return ensemble_logits
+            raise ValueError("Invalid method.")
+        return logit_weights
 
     def compute_euclidean_norm(self, vector_a, vector_b):
         return torch.tensor(1) - torch.sqrt(torch.sum((vector_a - vector_b) ** 2, dim=-1))
@@ -247,10 +272,11 @@ class FedMAD:
         return normalized_similarity_weights
 
 
-    def distill_onemodel_batch(self, model, images, selectN, optimizer, usecentral=True):
+    def distill_onemodel_batch(self, model, images, labels, selectN, optimizer, usecentral=True):
         ''' for ensemble logits '''
         with torch.autograd.set_detect_anomaly(True):
-            total_logits, total_attns = self.get_total_logits(model, images, selectN, usecentral=usecentral)
+            total_logits, total_attns = self.get_total_logits(model, images, labels, selectN, usecentral=usecentral)
+            logits_weights = self.get_logit_weights(total_logits, labels, selectN)
             ensemble_logits = self.get_ensemble_logits(total_logits, selectN)
             sim_weights = self.calculate_normalized_similarity_weights(ensemble_logits, total_logits, "cosine")
             
@@ -312,12 +338,12 @@ class FedMAD:
         for epoch in range(0, args.fedrounds):
             loss_avg = 0.0
             sub_loss_avg = 0.0
-            for i, (images, _, _) in tqdm(enumerate(self.distil_loader)):
+            for i, (images, labels, _) in tqdm(enumerate(self.distil_loader)):
                 images = images.cuda()
                 if self.args.C<1:
                     selectN = random.sample(self.locallist, int(args.C*self.N_parties))
                 
-                loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, optimizer, usecentral=False) 
+                loss, subloss = self.distill_onemodel_batch(self.central, images, labels, selectN, optimizer, usecentral=False) 
                 loss_avg += loss.item()
                 sub_loss_avg += subloss.item()
                 step += 1

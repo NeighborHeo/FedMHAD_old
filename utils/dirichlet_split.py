@@ -35,9 +35,9 @@ def get_dirichlet_distribution_count(N_class, N_parties, y_data, alpha=1):
         split_cumsum_index (list(list)): dirichlet split index (num of classes * num of parties)
     """
     y_bincount = np.bincount(y_data).reshape(-1, 1)
-    dirchlet_arr = get_dirichlet_distribution(N_class, N_parties, alpha)
-    dirchlet_count = (dirchlet_arr * y_bincount).astype(int)
-    return dirchlet_count
+    dirichlet_arr = get_dirichlet_distribution(N_class, N_parties, alpha)
+    dirichlet_count = (dirichlet_arr * y_bincount).astype(int)
+    return dirichlet_count
 
 def get_split_data_index(y_data, split_count):
     """ get split data class index for each party
@@ -91,10 +91,10 @@ def get_dirichlet_split_data(X_data, y_data, N_parties, N_class, alpha=1):
     Returns:
         split_data (dict): {party_id: {x: x_data, y: y_label, idx: [sample_class_index], len: num of samples}}
     """
-    dirchlet_count = get_dirichlet_distribution_count(N_class, N_parties, y_data, alpha)
-    split_dirchlet_data_index_dict = get_split_data_index(y_data, dirchlet_count)
-    split_dirchlet_data_dict = get_split_data(X_data, y_data, split_dirchlet_data_index_dict)
-    return split_dirchlet_data_dict
+    dirichlet_count = get_dirichlet_distribution_count(N_class, N_parties, y_data, alpha)
+    split_dirichlet_data_index_dict = get_split_data_index(y_data, dirichlet_count)
+    split_dirichlet_data_dict = get_split_data(X_data, y_data, split_dirichlet_data_index_dict)
+    return split_dirichlet_data_dict
 
 def plot_dirichlet_distribution(N_class, N_parties, alpha=1):
     """ plot color bar plot of dirichlet distribution by party id and class id 
@@ -103,25 +103,25 @@ def plot_dirichlet_distribution(N_class, N_parties, alpha=1):
         N_parties (int): num of parties
         alpha (int): dirichlet alpha
     """
-    dirchlet_arr = get_dirichlet_distribution(N_class, N_parties, alpha)
+    dirichlet_arr = get_dirichlet_distribution(N_class, N_parties, alpha)
     plt.figure(figsize=(10, 5))
     plt.title("Dirichlet Distribution")
     plt.xlabel("party_id")
     plt.ylabel("count")
     for class_id in range(N_class):
-        plt.bar(np.arange(N_parties), dirchlet_arr[class_id], bottom=np.sum(dirchlet_arr[:class_id], axis=0), label="class_{}".format(class_id))
+        plt.bar(np.arange(N_parties), dirichlet_arr[class_id], bottom=np.sum(dirichlet_arr[:class_id], axis=0), label="class_{}".format(class_id))
     plt.legend().set_bbox_to_anchor((1.02, 1))
     plt.xticks(np.arange(N_parties))
     plt.show()
     
 def plot_dirichlet_distribution_count(N_class, N_parties, y_data, alpha=1):
-    dirchlet_arr = get_dirichlet_distribution_count(N_class, N_parties, y_data, alpha)
+    dirichlet_arr = get_dirichlet_distribution_count(N_class, N_parties, y_data, alpha)
     plt.figure(figsize=(10, 5))
     plt.title("Dirichlet Distribution")
     plt.xlabel("party_id")
     plt.ylabel("count")
     for class_id in range(N_class):
-        plt.bar(np.arange(N_parties), dirchlet_arr[class_id], bottom=np.sum(dirchlet_arr[:class_id], axis=0), label="class_{}".format(class_id))
+        plt.bar(np.arange(N_parties), dirichlet_arr[class_id], bottom=np.sum(dirichlet_arr[:class_id], axis=0), label="class_{}".format(class_id))
     plt.legend().set_bbox_to_anchor((1.05, 1))
     plt.xticks(np.arange(N_parties))
     plt.show()
