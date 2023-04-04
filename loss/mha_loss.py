@@ -149,7 +149,7 @@ class MHALoss(torch.nn.Module):
         '''
         
         if weight is not None:
-            self.weight = torch.tensor(weight, dtype=torch.float)
+            self.weight = weight.clone().detach()
         else:
             self.weight = torch.ones(self.num_clients, dtype=torch.float)
             

@@ -1,7 +1,7 @@
 import unittest
 import torch
 import numpy as np
-from sklearn import metrics
+from sklearn.metrics import average_precision_score, roc_auc_score
 
 def compute_mean_average_precision(y_true, y_pred_proba):
     average_precisions = []
@@ -9,11 +9,23 @@ def compute_mean_average_precision(y_true, y_pred_proba):
         if len(np.unique(y_true[:, i])) == 1:
             average_precision = 1.0/(y_true.shape[1])
         else:
-            average_precision = metrics.average_precision_score(y_true[:, i], y_pred_proba[:, i], average='macro', pos_label=1)
+            average_precision = average_precision_score(y_true[:, i], y_pred_proba[:, i], average='macro', pos_label=1)
         average_precisions.append(average_precision)
     average_precisions = np.array(average_precisions)
     mean_average_precision = np.mean(average_precisions)
     return mean_average_precision, average_precisions
+
+def compute_mean_roc_auc(y_true, y_pred_proba):
+    roc_aucs = []
+    for i in range(y_true.shape[1]):
+        if len(np.unique(y_true[:, i])) == 1:
+            roc_auc = 1.0 / (y_true.shape[1])
+        else:
+            roc_auc = roc_auc_score(y_true[:, i], y_pred_proba[:, i])
+        roc_aucs.append(roc_auc)
+    roc_aucs = np.array(roc_aucs)
+    mean_roc_auc = np.mean(roc_aucs)
+    return mean_roc_auc, roc_aucs
 
 def top_k_accuracy(y_true, y_pred_proba, k=5):
     """
@@ -113,10 +125,12 @@ class TestMeanAveragePrecision(unittest.TestCase):
         y_pred_proba = np.array([[0.6, 0.4, 0.7, 0.8, 0.3, 0.9], [0.6, 0.4, 0.7, 0.8, 0.3, 0.9]])
         mean_average_precision, average_precisions = compute_mean_average_precision(y_true, y_pred_proba)
         print("mean_average_precision: ", mean_average_precision)
-        microAP = metrics.average_precision_score(y_true, y_pred_proba, average='micro')
+        microAP = average_precision_score(y_true, y_pred_proba, average='micro')
         print("microAP: ", microAP)
-        macroAP = metrics.average_precision_score(y_true, y_pred_proba, average='macro')
+        macroAP = average_precision_score(y_true, y_pred_proba, average='macro')
         print("macroAP: ", macroAP)
+        mean_roc_auc, roc_aucs = compute_mean_roc_auc(y_true, y_pred_proba)
+        print("mean_roc_auc: ", mean_roc_auc)
         
 class test_top_k_accuracy(unittest.TestCase):
     def __init__(self, *args, **kwargs):

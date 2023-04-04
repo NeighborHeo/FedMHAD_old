@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch.optim as optim
 
-import utils.utils as utils
+import utils
 import copy
 import random
 import loss as Loss
@@ -119,7 +119,7 @@ class FedMAD:
                     logging.info(f'Loading Local{n}......')
                     print('filepath : ', savename)
                     utils.load_dict(savename, self.localmodels[n])
-                    # acc = self.validate_model(self.localmodels[n])
+                    # result = self.validate_model(self.localmodels[n])
                     acc = 0.0
                 else:
                     logging.info(f'Init Local{n}, Epoch={epochs}......')
@@ -130,7 +130,7 @@ class FedMAD:
         initname = os.path.join(self.rootdir, self.args.initcentral)
         if os.path.exists(initname):
             utils.load_dict(initname, self.central)
-            acc = self.validate_model(self.central)
+            acc = self.validate_model(self.central)['acc']
             logging.info(f'Init Central--Acc:{(acc):.2f}')
             self.bestacc = acc
             self.best_statdict = copy.deepcopy(self.central.state_dict())
@@ -213,13 +213,13 @@ class FedMAD:
         ensemble_logits = sum_weighted_logits / sum_weights
         return ensemble_logits
 
-    def get_ensemble_logits(self, total_logits, selectN):
-        class_counts = self.countN[selectN]
-        class_weights = self.compute_class_weights(torch.from_numpy(class_counts).float().cuda())
+    def get_ensemble_logits(self, total_logits, selectN, logits_weights):
+        # class_counts = self.countN[selectN]
+        # class_weights = self.compute_class_weights(torch.from_numpy(class_counts).float().cuda())
         if self.voteout:
             ensemble_logits = Loss.weight_psedolabel(total_logits, self.countN[selectN], noweight=True).detach()
         else:
-            ensemble_logits = self.compute_ensemble_logits(total_logits, class_weights)
+            ensemble_logits = self.compute_ensemble_logits(total_logits, logits_weights)
         return ensemble_logits
 
     def compute_euclidean_norm(self, vector_a, vector_b):
@@ -247,12 +247,33 @@ class FedMAD:
         # print(normalized_similarity_weights)
         return normalized_similarity_weights
 
-
-    def distill_onemodel_batch(self, model, images, selectN, optimizer, usecentral=True):
+    def get_logit_weights(self, total_logits, labels, selectN, method='ap'):
+        if method == 'ap':
+            import metrics
+            ap_list = []
+            for i in range(total_logits.shape[0]):
+                client_logits = total_logits[i].detach().cpu().numpy()
+                map, aps = metrics.compute_mean_average_precision(labels, client_logits)
+                ap_list.append(aps)
+            ap_list = np.array(ap_list)
+            ap_list = torch.from_numpy(ap_list).float().cuda()
+            ap_weights = ap_list / ap_list.sum(dim=0, keepdim=True)
+            return ap_weights
+        elif method == 'count':
+            class_counts = self.countN[selectN]
+            class_counts = torch.from_numpy(class_counts).float().cuda()
+            class_weights = class_counts / class_counts.sum(dim=0, keepdim=True)
+            # class_weights = self.compute_class_weights(torch.from_numpy(class_counts).float().cuda())
+            return class_weights
+        else :
+            raise ValueError("Invalid weight method. Choose 'ap' or 'count'.")
+    
+    def distill_onemodel_batch(self, model, images, labels, selectN, optimizer, usecentral=True):
         ''' for ensemble logits '''
         with torch.autograd.set_detect_anomaly(True):
             total_logits, total_attns = self.get_total_logits(model, images, selectN, usecentral=usecentral)
-            ensemble_logits = self.get_ensemble_logits(total_logits, selectN)
+            logits_weights = self.get_logit_weights(total_logits, labels, selectN)
+            ensemble_logits = self.get_ensemble_logits(total_logits, selectN, logits_weights) * (1 - self.args.lambda_kd)
             sim_weights = self.calculate_normalized_similarity_weights(ensemble_logits, total_logits, "cosine")
             
             model.train()
@@ -313,12 +334,12 @@ class FedMAD:
         for epoch in range(0, args.fedrounds):
             loss_avg = 0.0
             sub_loss_avg = 0.0
-            for i, (images, _, _) in tqdm(enumerate(self.distil_loader)):
+            for i, (images, labels, _) in tqdm(enumerate(self.distil_loader)):
                 images = images.cuda()
                 if self.args.C<1:
                     selectN = random.sample(self.locallist, int(args.C*self.N_parties))
                 
-                loss, subloss = self.distill_onemodel_batch(self.central, images, selectN, optimizer, usecentral=False) 
+                loss, subloss = self.distill_onemodel_batch(self.central, images, labels, selectN, optimizer, usecentral=False) 
                 loss_avg += loss.item()
                 sub_loss_avg += subloss.item()
                 step += 1
@@ -327,8 +348,8 @@ class FedMAD:
             sub_loss_avg /= len(self.distil_loader)
             
             if epoch%1==0:
-                last_acc = self.validate_model(self.central)
-                acc = last_acc
+                result = self.validate_model(self.central)
+                acc = result['acc']
                  
             logging.info(f'Epoch{epoch}, Acc{(acc):.4f}')
             stop, best = earlyStop.update(epoch, acc)
@@ -352,6 +373,9 @@ class FedMAD:
                 self.experiment.log_metric('at_loss', sub_loss_avg, step=epoch)
                 self.experiment.log_metric('DisACC', acc, step=epoch)
                 self.experiment.log_metric('BestACC', bestacc, step=epoch)
+                self.experiment.log_metric('top_k', result['top_k'], step=epoch)
+                self.experiment.log_metric('mAP', result['mAP'], step=epoch)
+                self.experiment.log_metric('mROC', result['mROC'], step=epoch)
             
             scheduler.step()
             if stop:
@@ -390,10 +414,14 @@ class FedMAD:
             acc = utils.accuracyforsinglelabel(output, target)
         else:
             acc, = utils.accuracy(output, target)
-        
+        top_k = utils.multi_label_top_margin_k_accuracy(target, output, margin=0)
+        mAP, _ = utils.compute_mean_average_precision(target, output)
+        mROC, _ = utils.compute_mean_roc_auc(target, output)
+        print(f'Validation: Acc: {acc:.4f}, Topk: {top_k:.4f}, mAP: {mAP:.4f}, mROC: {mROC:.4f}')
         self.prev_acc = acc
         self.prev_model_state_dist = copy.deepcopy(model.state_dict())
-        return acc
+        result = {'acc': acc, 'top_k': top_k, 'mAP': mAP, 'mROC': mROC}
+        return result
     
     def trainLocal(self, savename, modelid=0):
         epochs = self.args.initepochs
