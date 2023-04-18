@@ -27,7 +27,7 @@ class FedMAD:
         self.args = args
         self.experiment = experiment
         self.prevacc = 0
-        self.prev_model_state_dist = {}
+        self.prev_model_state_dict = {}
         
         # ensemble and loss
         self.totalN = self.get_totalN(self.N_parties, self.private_data)
@@ -304,22 +304,62 @@ class FedMAD:
             total_loss.backward()
             optimizer.step()
 
-                
-        return logit_loss, sub_loss
-
+        return logit_loss, sub_loss, ensemble_logits.detach(), central_logits.detach()
+    
+    def get_optimizer(self, model):
+        args = self.args
+        last_layer_name = list(model.module.named_children())[-1][0]
+        parameters = [
+            {'params': [p for n, p in model.module.named_parameters() if last_layer_name not in n], 'lr': args.lr},
+            {'params': [p for n, p in model.module.named_parameters() if last_layer_name in n], 'lr': args.lr*100},
+        ]
+        if self.args.optim == 'SGD':
+            optimizer = optim.SGD( params= parameters, lr=self.args.lr, momentum=self.args.momentum, weight_decay=self.args.wdecay)
+        else:
+            optimizer = optim.Adam( params= parameters, lr=self.args.lr, betas=(self.args.momentum, 0.999), weight_decay=self.args.wdecay)
+        return optimizer
+    
+    def train_all_local_clients_with_distill(self, nRound, distill_loader, ensemble_logits, total_attn_list):
+        for i in range(self.args.N_parties):
+            self.train_local_clients_with_distill(i, nRound, distill_loader, ensemble_logits, total_attn_list)
+    
+    def train_local_clients_with_distill(self, nModel, nRound, distill_loader, ensemble_logits, total_attn_list):
+        model = self.localmodels[nModel]
+        model.train()
+        optimizer = self.get_optimizer(model)
+        m = torch.nn.Sigmoid()
+        for batch_idx, (images, _, _) in tqdm(enumerate(distill_loader)):
+            images = images.cuda()
+            logits, attn = model(images, return_attn=True)
+            logits = m(logits)
+            logit_loss = self.criterion(logits, ensemble_logits[batch_idx].detach().cuda())
+            # print('logit_loss : ', logit_loss)
+            optimizer.zero_grad()
+            logit_loss.backward()
+            optimizer.step()
+        
+        train_dataset = mydataset.data_cifar.mydataset(self.private_data[nModel]['x'], self.private_data[nModel]['y'], train=True, verbose=False)
+        train_loader = DataLoader(dataset=train_dataset, batch_size=self.args.batchsize, shuffle=True) 
+        for batch_idx, (images, target, _) in tqdm(enumerate(train_loader)):
+            images = images.cuda()
+            target = target.cuda()
+            logits, attn = model(images, return_attn=True)
+            logits = m(logits)
+            logit_loss = self.criterion(logits, target)
+            # print('logit_loss : ', logit_loss)
+            optimizer.zero_grad()
+            logit_loss.backward()
+            optimizer.step()
+        
+        result = self.evaluate_validation_metrics(model)
+        result = {f'client{nModel}_' + k: v for k, v in result.items()}
+        # self.experiment.log_metrics(result, step=nRound)
+        return result
+    
     def distill_local_central(self):
         args = self.args
         net = self.central
-        last_layer_name = list(net.module.named_children())[-1][0]
-        parameters = [
-            {'params': [p for n, p in net.module.named_parameters() if last_layer_name not in n], 'lr': args.dis_lr},
-            {'params': [p for n, p in net.module.named_parameters() if last_layer_name in n], 'lr': args.dis_lr*100},
-        ]
-        if self.args.optim == 'SGD':
-            optimizer = optim.SGD( params= parameters, lr=self.args.dis_lr, momentum=self.args.momentum, weight_decay=self.args.wdecay)
-        else:    
-            optimizer = optim.Adam( params= parameters, lr=self.args.dis_lr, betas=(self.args.momentum, 0.999), weight_decay=args.wdecay)
-            
+        optimizer = self.get_optimizer(net)    
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, float(args.fedrounds), eta_min=self.args.dis_lrmin,)
         
         savename = os.path.join(self.savedir, f'q{args.quantify}_n{args.noisescale}_{args.optim}_b{args.disbatchsize}_{args.dis_lr}_{args.fedrounds}_{args.dis_lrmin}_m{args.momentum}')
@@ -336,12 +376,16 @@ class FedMAD:
         for epoch in range(0, args.fedrounds):
             loss_avg = 0.0
             sub_loss_avg = 0.0
+            ensemble_logit_list = []
+            total_attn_list = []
             for i, (images, labels, _) in tqdm(enumerate(self.distil_loader)):
                 images = images.cuda()
                 if self.args.C<1:
                     selectN = random.sample(self.locallist, int(args.C*self.N_parties))
                 
-                loss, subloss = self.distill_onemodel_batch(self.central, images, labels, selectN, optimizer, usecentral=False) 
+                loss, subloss, ensemble_logits, total_attns = self.distill_onemodel_batch(self.central, images, labels, selectN, optimizer, usecentral=False) 
+                ensemble_logit_list.append(ensemble_logits)
+                # total_attn_list.append(total_attns)
                 loss_avg += loss.item()
                 sub_loss_avg += subloss.item()
                 step += 1
@@ -380,36 +424,44 @@ class FedMAD:
                 self.experiment.log_metric('mROC', result['mROC'], step=epoch)
             
             scheduler.step()
+                         
             if stop:
                 logging.info(f'Early Stop at Epoch{epoch}, Acc{(acc):.4f}')
                 break
-    
-    def validate_model(self, model):
-        model.eval()
-        # testacc = utils.AverageMeter()
+            
+            if epoch%2==0:
+                self.train_all_local_clients_with_distill(epoch, self.distil_loader, ensemble_logit_list, total_attn_list)
+
+    def evaluate_validation_metrics(self, model):
+        """
+        Evaluate the model's accuracy on the validation dataset and compute various metrics.
+        
+        Args:
+        - model: The PyTorch model to evaluate.
+        
+        Returns:
+        - A dictionary containing the computed metrics.
+        """
+        # Convert the model's output to probabilities using the sigmoid function.
         m = torch.nn.Sigmoid()
+
+        # Create empty lists to hold the model's outputs and targets.
         output_list = []
         target_list = []
-        def isSameDict(d1, d2):
-            for k in d1:
-                if k not in d2:
-                    return False
-                if not torch.equal(d1[k], d2[k]):
-                    return False
-            return True
-        if isSameDict(model.state_dict(), self.prev_model_state_dist):
-            return self.prev_acc
-        
+
+        # Evaluate the model on the validation dataset.
+        model.eval()
         with torch.no_grad():
-            for i, (images, target, _) in enumerate(self.val_loader):
+            for i, (images, target, _) in tqdm(enumerate(self.val_loader)):
                 images = images.cuda()
                 target = target.cuda()
                 output = model(images)
-                
+
+                # Save the model's output and target for later analysis.
                 output_list.append(m(output).detach().cpu().numpy())
                 target_list.append(target.detach().cpu().numpy())
-                
-                # testacc.update(acc)
+
+        # Compute various metrics on the model's outputs and targets.
         output = np.concatenate(output_list, axis=0)
         target = np.concatenate(target_list, axis=0)
         if self.args.task == 'singlelabel':
@@ -419,10 +471,41 @@ class FedMAD:
         top_k = utils.multi_label_top_margin_k_accuracy(target, output, margin=0)
         mAP, _ = utils.compute_mean_average_precision(target, output)
         mROC, _ = utils.compute_mean_roc_auc(target, output)
+
+        # Print the computed metrics.
         print(f'Validation: Acc: {acc:.4f}, Topk: {top_k:.4f}, mAP: {mAP:.4f}, mROC: {mROC:.4f}')
-        self.prev_acc = acc
-        self.prev_model_state_dist = copy.deepcopy(model.state_dict())
+
+        # Return the computed metrics as a dictionary.
         result = {'acc': acc, 'top_k': top_k, 'mAP': mAP, 'mROC': mROC}
+        return result
+    
+    def validate_model(self, model):
+        """
+        Validate the given model on the validation dataset and compute various metrics.
+        
+        Args:
+        - model: The PyTorch model to validate.
+        
+        Returns:
+        - A dictionary containing the computed metrics.
+        """
+        def isSameStateDict(dict1, dict2):
+            for key in dict1.keys():
+                if key not in dict2 or not torch.equal(dict1[key], dict2[key]):
+                    return False
+            return True
+        
+        if self.prev_model_state_dict is not None and isSameStateDict(model.state_dict(), self.prev_model_state_dict):
+            print("Model is same as the previous model.")
+            return self.prev_result
+
+        result = self.evaluate_validation_metrics(model)
+
+        # Save the model's state dictionary and metrics for future comparisons.
+        if not isSameStateDict(model.state_dict(), self.prev_model_state_dict):
+            self.prev_model_state_dict = copy.deepcopy(model.state_dict())
+            self.prev_result = result
+        
         return result
     
     def trainLocal(self, savename, modelid=0):
