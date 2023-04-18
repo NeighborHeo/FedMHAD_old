@@ -3,6 +3,14 @@ import numpy as np
 from sklearn import metrics
 import logging
 
+def set_seed(seed):
+    torch.manual_seed(0)
+    torch.cuda.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(0)
+    
 def copy_parties(n_local, model):
     parties = []
     for n in range(n_local):

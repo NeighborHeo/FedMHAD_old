@@ -39,6 +39,9 @@ if __name__ == "__main__":
     parser.add_argument("--task", default=config.get("task"), help="task name")
     parser.add_argument("--distill_heads", type=int, default=config.get("distill_heads"), help="distill heads")
     parser.add_argument("--lambda_kd", type=float, default=config.get("lambda_kd"), help="lambda kd")
+    parser.add_argument("--noise", action='store_true', help="noise")
+    parser.add_argument("--dirichlet", type=float, default=config.get("dirichlet"), help="dirichlet")
+    parser.add_argument("--exclude_heads", type=int, default=config.get("exclude_heads"), help="exclude heads")
     args = parser.parse_args(namespace=args)
 
     # args to dict 
@@ -49,6 +52,7 @@ if __name__ == "__main__":
         workspace="neighborheo",
     )
     experiment.log_parameters(vars(args))
+    experiment.set_name(f"{args.model_name}-dirichlet{args.dirichlet}-{args.sublossmode}-{args.distill_heads}-{args.lambda_kd}-{args.exclude_heads}-{args.optim}")
     
     os.environ['CUDA_VISIBLE_DEVICES']=args.gpu
     handlers = [logging.StreamHandler()]

@@ -56,8 +56,9 @@ class FedMAD:
         
         # import ipdb; ipdb.set_trace()
         #path to save ckpt
-        noise = '_noisy' if args.noise else ''
-        self.rootdir = f'./checkpoints/{args.dataset}/{args.model_name}_{args.task}{noise}/a{self.args.alpha}+sd{self.args.seed}+e{self.args.initepochs}+b{self.args.batchsize}+l{self.args.lossmode}+sl{self.args.sublossmode}'
+        noise = 'noisy' if args.noise else 'clean'
+        exclude = f'excluded_{args.exclude_heads}' if args.exclude_heads > 0 else ''
+        self.rootdir = f'./checkpoints/{args.dataset}/{args.model_name}_{args.task}_{noise}_{args.dirichlet:.1f}_{args.dis_lr}/{exclude}/a{args.alpha}+sd{args.seed}+e{args.initepochs}+b{args.batchsize}+l{args.lossmode}+sl{args.sublossmode}'
         if not os.path.isdir(self.rootdir):
             os.makedirs(self.rootdir)
         if initpth:
@@ -118,6 +119,7 @@ class FedMAD:
                     #self.localmodels[n].load_state_dict(self.best_statdict, strict=True)
                     logging.info(f'Loading Local{n}......')
                     print('filepath : ', savename)
+                    self.localmodels[n].module.setExcludedHead([i for i in range(self.args.exclude_heads)])
                     utils.load_dict(savename, self.localmodels[n])
                     # result = self.validate_model(self.localmodels[n])
                     acc = 0.0
@@ -439,7 +441,7 @@ class FedMAD:
             criterion = nn.CrossEntropyLoss() #include softmax
         else:
             criterion = torch.nn.MultiLabelSoftMarginLoss() # torch.nn.BCEWithLogitsLoss(reduction='mean')
-        optimizer = optim.SGD(model.parameters(), args.lr, momentum=0.9, weight_decay=3e-4)
+        optimizer = optim.SGD(model.parameters(), args.lr, momentum=0.9, weight_decay=1e-4)
         m = torch.nn.Sigmoid()
 
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
