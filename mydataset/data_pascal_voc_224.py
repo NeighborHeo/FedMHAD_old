@@ -126,17 +126,27 @@ def dirichlet_datasplit(args, privtype='cifar10', publictype='cifar100', N_parti
     elif publictype== 'mscoco':
         import pathlib
         path = pathlib.Path(args.datapath).joinpath('MSCOCO')
-        public_imgs = np.load(path.joinpath('coco_img.npy')).transpose(0, 2, 3, 1)
-        public_imgs = (public_imgs*255.0).round().astype(np.uint8)
+        if not path.joinpath('coco_img_1_10.npy').exists():
+            public_imgs = np.load(path.joinpath('coco_img.npy'))
+            public_labels = np.load(path.joinpath('coco_label.npy'))
+            index = np.random.choice(public_imgs.shape[0], int(public_imgs.shape[0]/10), replace=False)
+            public_imgs = public_imgs[index]
+            public_labels = public_labels[index]
+            np.save(path.joinpath('coco_img_1_10.npy'), public_imgs)
+            np.save(path.joinpath('coco_label_1_10.npy'), public_labels)
+        else :
+            public_imgs = np.load(path.joinpath('coco_img_1_10.npy'))
+            public_labels = np.load(path.joinpath('coco_label_1_10.npy'))
+        public_imgs = np.load(path.joinpath('coco_img.npy'))
         public_labels = np.load(path.joinpath('coco_label.npy'))
         # random sampling 1/10 of the data
-        index = np.random.choice(public_imgs.shape[0], int(public_imgs.shape[0]/10), replace=False)
-        public_imgs = public_imgs[index]
-        public_labels = public_labels[index]
-        
+        # public_imgs = (public_imgs.transpose(0, 2, 3, 1)*255.0).round().astype(np.uint8)
+        # print("size of public dataset: ", public_imgs.shape, "images")
+        # public_imgs, public_labels = self.filter_images_by_label_type(self.args.task, public_imgs, public_labels)
+        # public_dataset = mydataset(public_imgs, public_labels, transforms=transformations_train)
         print("size of public dataset: ", public_imgs.shape, "images")
         public_imgs, public_labels = filter_images_by_label_type(args.task, public_imgs, public_labels)
-        public_dataset = mydataset(public_imgs, public_labels, transforms=transformations_train)
+        public_dataset = mydataset(public_imgs, public_labels)
         # transforms=transformations_valid)
         
         path = pathlib.Path(args.datapath).joinpath('PASCAL_VOC_2012')
@@ -148,7 +158,7 @@ def dirichlet_datasplit(args, privtype='cifar10', publictype='cifar100', N_parti
         
 
     distill_loader = DataLoader(
-            dataset=public_dataset, batch_size=args.disbatchsize, shuffle=online, 
+            dataset=public_dataset, batch_size=args.disbatchsize, shuffle=False, 
             num_workers=args.num_workers, pin_memory=True, sampler=None)
     #private
     if privtype=='cifar10':
